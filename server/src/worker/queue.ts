@@ -113,6 +113,13 @@ export async function enqueueFromWebhook(input: EnqueueInput): Promise<WebhookEn
 // ever handing one job to two of them. Two workers claiming for the same
 // workspace at the same instant can exceed the limit by one; it is a fairness
 // bound, not a hard quota.
+//
+// A change with a running job is skipped until that run finishes. Otherwise an
+// older head that finishes last would replace the newer review's summary
+// comment, reopen findings it fixed and become the "latest review". Waiting is
+// enough: enqueue supersedes older queued jobs, so the one left waiting is the
+// newest head and publishes last. A run that hangs holds its change only until
+// recoverStale, which supersedes it once a newer job is queued.
 export async function claimNext(workspaceConcurrency = Number.MAX_SAFE_INTEGER): Promise<ReviewJob | null> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
     UPDATE review_jobs
@@ -122,6 +129,12 @@ export async function claimNext(workspaceConcurrency = Number.MAX_SAFE_INTEGER):
       JOIN repositories r ON r.id = j.repository_id
       JOIN forge_connections c ON c.id = r.connection_id
       WHERE j.status = 'queued'
+        AND NOT EXISTS (
+          SELECT 1 FROM review_jobs busy
+          WHERE busy.repository_id = j.repository_id
+            AND busy.number = j.number
+            AND busy.status = 'running'
+        )
         AND (
           SELECT count(*) FROM review_jobs running
           JOIN repositories rr ON rr.id = running.repository_id

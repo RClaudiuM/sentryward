@@ -136,6 +136,28 @@ describe("claimNext", () => {
 
     expect(claimed?.progress).toBeNull();
   });
+
+  it("waits for a change's running job to finish before claiming its next one", async () => {
+    await job("aaa");
+    const running = (await claimNext())!;
+    const newer = await job("bbb");
+
+    expect(await claimNext()).toBeNull();
+
+    await complete(running.id, { status: "completed", verdict: "pass" });
+
+    expect((await claimNext())?.id).toBe(newer.id);
+  });
+
+  it("still claims other changes while one change is running", async () => {
+    await job("aaa", 1);
+    await claimNext();
+    await job("bbb", 1);
+    const other = await job("ccc", 2);
+
+    expect((await claimNext())?.id).toBe(other.id);
+    expect(await claimNext()).toBeNull();
+  });
 });
 
 describe("recordProgress", () => {
