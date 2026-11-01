@@ -1080,7 +1080,7 @@ describe("runJob when it loses its claim", () => {
     const signals: (AbortSignal | undefined)[] = [];
     runDeps.generateFor = () => async (request) => {
       signals.push(request.abortSignal);
-      await fail(job.id, "Review exceeded the maximum run time");
+      await fail(job.id, job.attempts, "Review exceeded the maximum run time");
       // Slower than the watch, so the loss is noticed mid-call.
       await new Promise((resolve) => setTimeout(resolve, 50));
       return model.generate(request);

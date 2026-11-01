@@ -172,13 +172,17 @@ export interface CompleteInput {
 }
 
 // Only a running job is finished: one cancelled while it ran keeps that
-// status, so a close that arrives mid-review is never overwritten.
+// status, so a close that arrives mid-review is never overwritten. And only by
+// the attempt that holds it (see claimState): a run that stalled past the lock
+// timeout and woke after recovery handed its job to a later attempt must not
+// finish that attempt's job, or the later run's own result would be dropped.
 export async function complete(
   id: string,
+  attempts: number,
   input: CompleteInput & Partial<Pick<ReviewJob, "headSha" | "baseSha">>,
 ): Promise<boolean> {
   const { count } = await prisma.reviewJob.updateMany({
-    where: { id, status: "running" },
+    where: { id, status: "running", attempts },
     data: {
       headSha: input.headSha,
       baseSha: input.baseSha,
@@ -213,9 +217,11 @@ export async function recordProgress(id: string, attempts: number, progress: Rev
   });
 }
 
-export async function fail(id: string, error: string): Promise<void> {
+// Scoped to the attempt like complete(), so a run that lost its job cannot
+// fail the one that took it over.
+export async function fail(id: string, attempts: number, error: string): Promise<void> {
   await prisma.reviewJob.updateMany({
-    where: { id, status: "running" },
+    where: { id, status: "running", attempts },
     data: { status: "failed", verdict: "error", error, lockedAt: null, finishedAt: new Date() },
   });
 }

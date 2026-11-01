@@ -55,7 +55,7 @@ export async function execute(job: ReviewJob, deps: ExecuteDeps = defaultDeps): 
     const outcome = await Promise.race([run, timeout]);
     if (outcome === RUN_TIMEOUT) {
       console.error(`[worker] job ${job.id} exceeded the maximum run time; freeing its slot`);
-      await fail(job.id, "Review exceeded the maximum run time").catch((failErr) => {
+      await fail(job.id, job.attempts, "Review exceeded the maximum run time").catch((failErr) => {
         console.error(`[worker] could not record timeout for job ${job.id}`, failErr);
       });
       return;
@@ -63,7 +63,7 @@ export async function execute(job: ReviewJob, deps: ExecuteDeps = defaultDeps): 
     console.log(`[worker] finished job ${job.id}`);
   } catch (err) {
     console.error(`[worker] job ${job.id} failed`, err);
-    await fail(job.id, err instanceof Error ? err.message : String(err)).catch((failErr) => {
+    await fail(job.id, job.attempts, err instanceof Error ? err.message : String(err)).catch((failErr) => {
       // Left running; stale-lock recovery retries or fails it later.
       console.error(`[worker] could not record failure for job ${job.id}`, failErr);
     });

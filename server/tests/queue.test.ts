@@ -158,7 +158,7 @@ describe("claimNext", () => {
     expect(await claimNext()).toBeNull();
 
     // Stored, but the run is still syncing findings.
-    await complete(running.id, { status: "completed", verdict: "pass" });
+    await complete(running.id, running.attempts, { status: "completed", verdict: "pass" });
     expect(await claimNext()).toBeNull();
 
     await releaseLease(running.id, running.attempts);
@@ -183,7 +183,7 @@ describe("claimNext", () => {
     const running = (await claimNext())!;
     const newer = await job("bbb");
 
-    await fail(running.id, "Review exceeded the maximum run time");
+    await fail(running.id, running.attempts, "Review exceeded the maximum run time");
     expect(await claimNext()).toBeNull();
 
     await expireLease(running.id);
@@ -227,7 +227,7 @@ describe("recordProgress", () => {
   it("leaves a finished job alone", async () => {
     await job("aaa", 1);
     const claimed = (await claimNext())!;
-    await complete(claimed.id, { status: "completed", verdict: "pass" });
+    await complete(claimed.id, claimed.attempts, { status: "completed", verdict: "pass" });
 
     await recordProgress(claimed.id, claimed.attempts, { stage: "publishing" });
 
@@ -241,7 +241,7 @@ describe("complete and fail", () => {
     await job("aaa");
     const claimed = (await claimNext())!;
 
-    await complete(claimed.id, {
+    await complete(claimed.id, claimed.attempts, {
       status: "completed",
       verdict: "blocked",
       result: { findings: [{ title: "x" }] },
@@ -257,10 +257,45 @@ describe("complete and fail", () => {
     await job("aaa");
     const claimed = (await claimNext())!;
 
-    await fail(claimed.id, "boom");
+    await fail(claimed.id, claimed.attempts, "boom");
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
     expect(stored).toMatchObject({ status: "failed", verdict: "error", error: "boom" });
+  });
+
+  it("leaves the job alone when an earlier attempt finishes or fails it", async () => {
+    await job("aaa");
+    const claimed = (await claimNext())!;
+
+    expect(await complete(claimed.id, claimed.attempts - 1, { status: "completed", verdict: "pass" })).toBe(false);
+    await fail(claimed.id, claimed.attempts - 1, "boom");
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
+    expect(stored).toMatchObject({ status: "running", verdict: null, error: null, finishedAt: null });
+  });
+
+  it("lets a stalled run that woke after recovery change nothing for the retry", async () => {
+    await job("aaa");
+    const stalled = (await claimNext())!;
+    // The stalled worker's lock and lease have both run out.
+    await prisma.reviewJob.update({
+      where: { id: stalled.id },
+      data: { lockedAt: new Date(Date.now() - 60 * 60 * 1000), leaseExpiresAt: null },
+    });
+    expect((await recoverStale(15 * 60 * 1000, 3)).count).toBe(1);
+    const retry = (await claimNext())!;
+    expect(retry).toMatchObject({ id: stalled.id, attempts: stalled.attempts + 1 });
+
+    await fail(stalled.id, stalled.attempts, "boom");
+    expect(await complete(stalled.id, stalled.attempts, { status: "completed", verdict: "blocked" })).toBe(false);
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: retry.id } })).toMatchObject({ status: "running" });
+
+    expect(await complete(retry.id, retry.attempts, { status: "completed", verdict: "pass" })).toBe(true);
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: retry.id } })).toMatchObject({
+      status: "completed",
+      verdict: "pass",
+      error: null,
+    });
   });
 
   it("records the change's title whatever the run's status, a cancel included", async () => {
@@ -293,7 +328,7 @@ describe("cancelForDisabledRepositories", () => {
     }
     expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: done.id } })).toMatchObject({ status: "completed", error: null });
     // The worker cannot overwrite the reason when it finishes.
-    expect(await complete(running.id, { status: "completed", verdict: "pass" })).toBe(false);
+    expect(await complete(running.id, running.attempts, { status: "completed", verdict: "pass" })).toBe(false);
   });
 
   it("records the reason it was given and does nothing for no repositories", async () => {
@@ -410,7 +445,7 @@ describe("heartbeat", () => {
   it("does not touch a job that is no longer running", async () => {
     const done = await job("aaa");
     const claimed = (await claimNext())!;
-    await complete(claimed.id, { status: "completed", verdict: "pass" });
+    await complete(claimed.id, claimed.attempts, { status: "completed", verdict: "pass" });
 
     await heartbeat(done.id, claimed.attempts);
 
@@ -496,7 +531,7 @@ describe("claimState", () => {
   it("is lost once the job was failed", async () => {
     await job("aaa");
     const claimed = (await claimNext())!;
-    await fail(claimed.id, "Review exceeded the maximum run time");
+    await fail(claimed.id, claimed.attempts, "Review exceeded the maximum run time");
 
     expect(await claimState(claimed.id, claimed.attempts)).toBe("lost");
   });
