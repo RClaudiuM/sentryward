@@ -8,6 +8,14 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- A forge that accepts the connection but never answers no longer hangs a
+  review or a webhook. Every forge API request, including each redirect hop,
+  is now aborted after 30 seconds, so the worker fails the run and frees it
+  instead of keeping the whole change in memory, and webhook handlers that
+  call the forge respond. Closes #186.
+
 ## [0.3.0] - 2026-10-31
 
 Sentryward remains pre-1.0, and this release changes some default behaviour:
