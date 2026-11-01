@@ -191,8 +191,11 @@ function previewStub(bodies: PreviewBody[]) {
   }
 }
 
+const REVIEWED = { reason: null, fullReview: true, walkthrough: true }
+
 const globalRoutes = (extra: Record<string, unknown> = {}) => ({
   "POST /api/config/preview": PREVIEW,
+  "POST /api/config/triggers/check": REVIEWED,
   "GET /api/config/global": globalConfig(),
   "GET /api/config/schema": schema,
   "GET /api/repos": { repos: [] },
@@ -430,7 +433,7 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     await waitFor(() =>
       expect(screen.getByRole("combobox", { name: "Code review trigger" })).toHaveTextContent("Published PRs"),
     )
-    for (const name of ["Code reviews", "Skip rules"]) {
+    for (const name of ["Automatic reviews", "PR summary", "Commands and replies", "Skip rules"]) {
       expect(screen.getByRole("group", { name })).toBeInTheDocument()
     }
     for (const name of ["Review automatically on push", "Allow review command"]) {
@@ -1534,5 +1537,155 @@ describe("Finding Types tab", { timeout: 20_000 }, () => {
     await waitFor(() => expect(slider).toHaveValue("0.5"))
     await userEvent.type(screen.getByLabelText("Min confidence"), "0.8")
     expect(slider).toHaveValue("0.8")
+  })
+})
+
+describe("Triggers tab", { timeout: 20_000 }, () => {
+  it("summarises when Sentryward runs, following unsaved edits", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=triggers" })
+
+    const summary = await screen.findByRole("region", { name: "Triggers summary" })
+    await waitFor(() => expect(within(summary).getByText("Published, drafts wait")).toBeInTheDocument())
+    expect(within(summary).getByText("0 rules")).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("switch", { name: "Full review on push" }))
+    await userEvent.type(screen.getByLabelText("Ignore by title"), "WIP{enter}")
+    expect(within(summary).getByText("Every file")).toBeInTheDocument()
+    expect(within(summary).getByText("1 rule")).toBeInTheDocument()
+    expect(within(summary).getByText("WIP", { exact: false })).toBeInTheDocument()
+  })
+
+  it("greys out what automatic reviews use while they are off", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=triggers" })
+
+    const push = await screen.findByRole("switch", { name: "Review automatically on push" })
+    await waitFor(() => expect(push).toBeEnabled())
+    expect(screen.getByLabelText("Skip by label")).toBeEnabled()
+
+    await userEvent.click(screen.getByRole("combobox", { name: "Code review trigger" }))
+    await userEvent.click(screen.getByRole("option", { name: "Manual only" }))
+    expect(push).toBeDisabled()
+    expect(screen.getByRole("switch", { name: "Full review on push" })).toBeDisabled()
+    expect(screen.getByRole("combobox", { name: "PR summary trigger" })).toBeDisabled()
+    for (const name of ["Ignore by title", "Skip by author", "Skip by label", "Skip by source branch", "Skip by target branch"]) {
+      expect(screen.getByLabelText(name)).toBeDisabled()
+    }
+    expect(screen.getByText("Only used for automatic reviews, which are off.")).toBeInTheDocument()
+    // Commands are not automatic reviews.
+    expect(screen.getByRole("switch", { name: "Allow review command" })).toBeEnabled()
+  })
+
+  it("greys out the PR summary trigger while the walkthrough is off, linking to Display", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=display" })
+
+    await userEvent.click(await screen.findByRole("switch", { name: "Walkthrough" }))
+    await openTab("Triggers")
+    expect(screen.getByRole("combobox", { name: "PR summary trigger" })).toBeDisabled()
+    expect(screen.getByText(/Only used when Walkthrough is on/)).toBeInTheDocument()
+    expect(within(screen.getByRole("region", { name: "Triggers summary" })).getByText("Off, walkthrough is off")).toBeInTheDocument()
+  })
+
+  it("checks a sample change against the unsaved settings", async () => {
+    const bodies: Record<string, unknown>[] = []
+    mockApi(
+      globalRoutes({
+        "POST /api/config/triggers/check": (init?: RequestInit) => {
+          const body = JSON.parse(String(init?.body))
+          bodies.push(body)
+          const skipped = body.change.labels.includes("no-review")
+          return jsonResponse(200, skipped ? { reason: 'The change has the label "no-review"', fullReview: false, walkthrough: false } : REVIEWED)
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?tab=triggers" })
+
+    const check = await screen.findByRole("region", { name: "Triggers summary" })
+    await userEvent.click(within(check).getByRole("button", { name: "Will this be reviewed?" }))
+    expect(await within(check).findByText("Reviewed")).toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText("Skip by label"), "no-review{enter}")
+    await userEvent.type(within(check).getByLabelText("Labels"), "no-review{enter}")
+    expect(await within(check).findByText(/The change has the label "no-review"/)).toBeInTheDocument()
+    expect(bodies.at(-1)).toMatchObject({
+      event: "opened",
+      settings: { triggers: { skipLabels: ["no-review"] } },
+      change: { labels: ["no-review"], headRef: "feature/login", baseRef: "main", isDraft: false },
+    })
+  })
+
+  it("hides the sample check until asked, keeping the sample between toggles", async () => {
+    let checks = 0
+    mockApi(
+      globalRoutes({
+        "POST /api/config/triggers/check": () => {
+          checks++
+          return jsonResponse(200, REVIEWED)
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?tab=triggers" })
+
+    const summary = await screen.findByRole("region", { name: "Triggers summary" })
+    const toggle = within(summary).getByRole("button", { name: "Will this be reviewed?" })
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    expect(within(summary).queryByLabelText("Labels")).not.toBeInTheDocument()
+    expect(within(summary).getByText("Check a sample change against these settings.")).toBeInTheDocument()
+    // Give a debounced check time to fire, had one been asked for.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(checks).toBe(0)
+
+    await userEvent.click(toggle)
+    expect(toggle).toHaveAttribute("aria-expanded", "true")
+    expect(await within(summary).findByText("Reviewed")).toBeInTheDocument()
+    expect(checks).toBeGreaterThan(0)
+
+    const title = within(summary).getByLabelText("Title")
+    await userEvent.clear(title)
+    await userEvent.type(title, "WIP: login")
+    await userEvent.click(toggle)
+    expect(within(summary).queryByLabelText("Title")).not.toBeInTheDocument()
+    await userEvent.click(toggle)
+    expect(within(summary).getByLabelText("Title")).toHaveValue("WIP: login")
+  })
+
+  it("tags how each skip list matches", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=triggers" })
+
+    await screen.findByLabelText("Skip by label")
+    expect(screen.getByText("exact, case-sensitive")).toBeInTheDocument()
+    expect(screen.getByText("contains, any case")).toBeInTheDocument()
+    expect(screen.getByText("exact, any case")).toBeInTheDocument()
+    expect(screen.getAllByText("contains")).toHaveLength(2)
+  })
+
+  it("says a repository's list replaces the inherited one", async () => {
+    mockApi(
+      globalRoutes({
+        "GET /api/repos": { repos: [repo("r1", "team/web", { followGlobal: false })] },
+        // What a repository inherits is the global config's effective config.
+        "GET /api/config/global": {
+          ...globalConfig({ triggers: { skipLabels: ["no-review"] } }),
+          config: { ...effective, triggers: { ...effective.triggers, skipLabels: ["no-review"] } },
+        },
+        "GET /api/repos/r1/config": {
+          ref: "main",
+          repoFile: null,
+          warnings: [],
+          config: { ...effective, triggers: { ...effective.triggers, skipLabels: ["no-review"] } },
+          sources: {},
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?repo=r1&tab=triggers" })
+
+    const labels = await screen.findByLabelText("Skip by label")
+    await waitFor(() => expect(labels).toBeEnabled())
+    expect(screen.queryByText(/Replaces the inherited list/)).not.toBeInTheDocument()
+    await userEvent.type(labels, "wip{enter}")
+    expect(screen.getByText("Replaces the inherited list: no-review.")).toBeInTheDocument()
   })
 })
