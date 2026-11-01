@@ -331,8 +331,9 @@ async function runClaimedJob(job: ReviewJob, deps: RunJobDeps, progress: Progres
   // A person can cancel any running job, so it is always watched. Closing the
   // change cancels its queued jobs from the webhook; with abortOnClose this also
   // catches the rest: a close the webhook missed, and one that lands mid-review.
-  // A run that lost its claim (failed on timeout, or recovered and claimed
-  // again) stops too, so it never publishes for a job it no longer owns.
+  // A run that lost its claim (failed on timeout, recovered and claimed again,
+  // or overtaken by a newer job for the change) stops too, so it never
+  // publishes for a job it no longer owns.
   let cancelledBy: "manual" | "closed" | "disabled" | "lost" | undefined;
   const ownsClaim = async () => {
     const claim = await claimState(job.id, job.attempts);

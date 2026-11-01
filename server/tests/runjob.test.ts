@@ -8,7 +8,7 @@ import type { Forge } from "../src/services/forge.ts";
 import {
   cancelForDisabledRepositories,
   cancelJob,
-  claimNext,
+  claimNext as claimNextJob,
   DISABLED_REASON,
   enqueue,
   fail,
@@ -211,6 +211,13 @@ function deps(
     cache: options.cache,
   };
   return { runDeps, reads, toolReads, model, published };
+}
+
+// These tests call runJob directly, one run after another, so nothing releases
+// a finished run's lease the way execute() does when the run returns.
+async function claimNext() {
+  await prisma.reviewJob.updateMany({ data: { leaseExpiresAt: null } });
+  return claimNextJob();
 }
 
 async function claimedJob() {
@@ -1108,6 +1115,28 @@ describe("runJob when it loses its claim", () => {
     expect(stored).toMatchObject({ status: "running", attempts: job.attempts + 1, finishedAt: null });
     expect(published.inline).toEqual([]);
     expect(published.statuses).toEqual(["pending"]);
+  });
+
+  it("publishes nothing once a newer job for the change has started", async () => {
+    const job = await claimedJob();
+    const { runDeps, model, published } = deps({}, answers);
+    runDeps.closeCheckIntervalMs = 5;
+    runDeps.generateFor = () => async (request) => {
+      // This run's lease ran out while it stalled, and a newer push was claimed.
+      const newer = await enqueue({ repositoryId, number: 42, headSha: "newhead", trigger: "webhook" });
+      await prisma.reviewJob.update({ where: { id: newer.id }, data: { status: "running", startedAt: new Date() } });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return model.generate(request);
+    };
+
+    await runJob(job, runDeps);
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(stored).toMatchObject({ status: "running", finishedAt: null });
+    expect(published.inline).toEqual([]);
+    expect(published.summaries).toHaveLength(1);
+    expect(published.statuses).toEqual(["pending"]);
+    expect(await prisma.finding.count()).toBe(0);
   });
 });
 

@@ -393,6 +393,11 @@ model ReviewJob {
   error           String?
   attempts        Int            @default(0)
   lockedAt        DateTime?      @map("locked_at") @db.Timestamptz
+  // Held by the worker run, not the job status: set on claim, renewed by the
+  // heartbeat, cleared when the run itself ends. While it is in the future the
+  // change is busy, so a cancelled or timed-out run still finishing keeps the
+  // next review from starting (see claimNext).
+  leaseExpiresAt  DateTime?      @map("lease_expires_at") @db.Timestamptz
   startedAt       DateTime?      @map("started_at") @db.Timestamptz
   finishedAt      DateTime?      @map("finished_at") @db.Timestamptz
   // Claimed before notification targets are sent to, so a job finished by

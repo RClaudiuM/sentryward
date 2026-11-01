@@ -18,7 +18,11 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 - Two reviews of the same pull or merge request no longer run at the same
   time. A newer push now waits for the running review to finish, so an older
   head that finishes last can no longer overwrite the newer review's summary
-  comment, reopen its fixed findings or become the latest review. Closes #183.
+  comment, reopen its fixed findings or become the latest review. A review
+  cancelled from the dashboard or stopped by the run time limit finishes
+  stopping before the next one starts, and if a worker dies mid-review the next
+  review of that change starts within about three heartbeats (3 minutes by
+  default). Closes #183.
 
 ## [0.3.0] - 2026-10-31
 

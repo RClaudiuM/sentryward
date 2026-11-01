@@ -1,3 +1,4 @@
+import { env } from "../config/env.ts";
 import { lockChange } from "../lib/changeLock.ts";
 import { prisma } from "../lib/prisma.ts";
 import type { Prisma, Repository, ReviewJob, ReviewTrigger } from "../generated/prisma/client.ts";
@@ -114,16 +115,24 @@ export async function enqueueFromWebhook(input: EnqueueInput): Promise<WebhookEn
 // workspace at the same instant can exceed the limit by one; it is a fairness
 // bound, not a hard quota.
 //
-// A change with a running job is skipped until that run finishes. Otherwise an
-// older head that finishes last would replace the newer review's summary
-// comment, reopen findings it fixed and become the "latest review". Waiting is
-// enough: enqueue supersedes older queued jobs, so the one left waiting is the
-// newest head and publishes last. A run that hangs holds its change only until
-// recoverStale, which supersedes it once a newer job is queued.
-export async function claimNext(workspaceConcurrency = Number.MAX_SAFE_INTEGER): Promise<ReviewJob | null> {
+// A change whose run still holds its lease is skipped until that run ends.
+// Otherwise an older head that finishes last would replace the newer review's
+// summary comment, reopen findings it fixed and become the "latest review".
+// The lease, not the status, decides: a run cancelled from the dashboard, failed
+// on its time limit or completed but still syncing findings is still working on
+// the change. Waiting is enough: enqueue supersedes older queued jobs, so the
+// one left waiting is the newest head and publishes last. A worker that dies
+// frees its change once the lease expires, and a hung live run once it passes
+// WORKER_MAX_RUN_MS and its last lease runs out; claimState fences either one
+// off if it wakes up after the newer run started.
+export async function claimNext(
+  workspaceConcurrency = Number.MAX_SAFE_INTEGER,
+  leaseMs = RUN_LEASE_MS,
+): Promise<ReviewJob | null> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
     UPDATE review_jobs
-    SET status = 'running', locked_at = now(), started_at = now(), attempts = attempts + 1, progress = NULL
+    SET status = 'running', locked_at = now(), started_at = now(), attempts = attempts + 1, progress = NULL,
+      lease_expires_at = now() + make_interval(secs => ${leaseMs / 1000})
     WHERE id = (
       SELECT j.id FROM review_jobs j
       JOIN repositories r ON r.id = j.repository_id
@@ -133,7 +142,7 @@ export async function claimNext(workspaceConcurrency = Number.MAX_SAFE_INTEGER):
           SELECT 1 FROM review_jobs busy
           WHERE busy.repository_id = j.repository_id
             AND busy.number = j.number
-            AND busy.status = 'running'
+            AND busy.lease_expires_at > now()
         )
         AND (
           SELECT count(*) FROM review_jobs running
@@ -281,34 +290,67 @@ async function cancelWhere(
   return count;
 }
 
-// Refreshes the lock on a job still being worked, so recoverStale only reclaims
-// a job whose worker has actually gone silent, not a slow-but-healthy run.
-// Scoped to running jobs so a cancel or finish between beats is never undone.
-export async function heartbeat(id: string): Promise<void> {
-  await prisma.reviewJob.updateMany({
-    where: { id, status: "running" },
-    data: { lockedAt: new Date() },
-  });
+// How long a run's hold on its change outlives its last heartbeat. Three beats,
+// so one missed beat (a DB blip) does not free the change, and well over the
+// forge request timeout, so a step already in flight lands before a newer run
+// can start. The env check keeps a beat below WORKER_LOCK_TIMEOUT_MS; three of
+// them at the defaults (3 min) are still well under it.
+export const RUN_LEASE_MS = 3 * env.WORKER_HEARTBEAT_INTERVAL_MS;
+
+// Renews the run's lease, and refreshes the lock on a job still being worked so
+// recoverStale only reclaims a job whose worker has actually gone silent, not a
+// slow-but-healthy run. The lock is only touched while the job runs, so a
+// cancel or finish between beats is never undone; the lease is renewed after
+// one too, because the run is still working until it returns. Scoped to this
+// attempt, so a run that lost its job never extends the lease of the one that
+// took it over, and to a lease still held, so a released one stays released.
+export async function heartbeat(id: string, attempts: number, leaseMs = RUN_LEASE_MS): Promise<void> {
+  await prisma.$executeRaw`
+    UPDATE review_jobs
+    SET lease_expires_at = now() + make_interval(secs => ${leaseMs / 1000}),
+      locked_at = CASE WHEN status = 'running' THEN now() ELSE locked_at END
+    WHERE id = ${id} AND attempts = ${attempts} AND lease_expires_at IS NOT NULL
+  `;
+}
+
+// The run has returned, so its change may take the next review. Scoped to the
+// attempt for the same reason as heartbeat.
+export async function releaseLease(id: string, attempts: number): Promise<void> {
+  await prisma.reviewJob.updateMany({ where: { id, attempts }, data: { leaseExpiresAt: null } });
 }
 
 // Whether a run still holds its claim. A job cancelled from the dashboard says
 // so, and one cancelled because its repository was turned off says "disabled";
 // one failed on timeout, requeued by recovery or claimed again by another
-// worker (a later attempt) is lost, and the run must leave it alone.
+// worker (a later attempt) is lost, and the run must leave it alone. So is one
+// whose change has a newer job that already started: that happens only when
+// this run's lease ran out while it was still alive (a stalled process), and
+// the newer head must win, so this run publishes nothing more.
 export async function claimState(id: string, attempts: number): Promise<"owned" | "cancelled" | "disabled" | "lost"> {
   const job = await prisma.reviewJob.findUnique({
     where: { id },
-    select: { status: true, attempts: true, error: true },
+    select: { status: true, attempts: true, error: true, repositoryId: true, number: true, createdAt: true },
   });
   if (job?.status === "cancelled") return job.error && OFF_REASONS.includes(job.error) ? "disabled" : "cancelled";
-  return job?.status === "running" && job.attempts === attempts ? "owned" : "lost";
+  if (job?.status !== "running" || job.attempts !== attempts) return "lost";
+  const newer = await prisma.reviewJob.findFirst({
+    where: {
+      repositoryId: job.repositoryId,
+      number: job.number,
+      createdAt: { gt: job.createdAt },
+      startedAt: { not: null },
+    },
+    select: { id: true },
+  });
+  return newer ? "lost" : "owned";
 }
 
 // A worker that died mid-job leaves it running forever. Jobs locked longer than
 // the timeout go back to the queue, or fail once they have used every attempt.
-// One whose change has had a newer push queued since is superseded instead:
-// requeueing it would leave two queued jobs for the change, and the newer one
-// already reviews the current head. Returns how many jobs were recovered, and
+// One whose change has had a newer job since, in any state, is superseded
+// instead: the newer one speaks for the change (it may already be running,
+// since a dead worker's lease expires long before this timeout), and
+// requeueing would review an older head after it. Returns how many jobs were recovered, and
 // which of them failed, for notifications.
 export async function recoverStale(
   lockTimeoutMs: number,
@@ -324,6 +366,7 @@ export async function recoverStale(
       verdict: "error",
       error: "Worker stopped responding",
       lockedAt: null,
+      leaseExpiresAt: null,
       finishedAt: new Date(),
     },
     select: { id: true },
@@ -331,22 +374,22 @@ export async function recoverStale(
 
   const retryable = await prisma.reviewJob.findMany({
     where: { ...stale, attempts: { lt: maxAttempts } },
-    select: { id: true, repositoryId: true, number: true },
+    select: { id: true, repositoryId: true, number: true, createdAt: true },
   });
   let recovered = 0;
   for (const job of retryable) {
     recovered += await prisma.$transaction(async (tx) => {
       await lockEnqueue(tx, job.repositoryId, job.number);
       const newer = await tx.reviewJob.findFirst({
-        where: { repositoryId: job.repositoryId, number: job.number, status: "queued" },
+        where: { repositoryId: job.repositoryId, number: job.number, createdAt: { gt: job.createdAt } },
         select: { id: true },
       });
       // Still stale: a heartbeat that landed since means the worker is alive.
       const { count } = await tx.reviewJob.updateMany({
         where: { id: job.id, ...stale },
         data: newer
-          ? { status: "superseded", lockedAt: null, finishedAt: new Date() }
-          : { status: "queued", lockedAt: null },
+          ? { status: "superseded", lockedAt: null, leaseExpiresAt: null, finishedAt: new Date() }
+          : { status: "queued", lockedAt: null, leaseExpiresAt: null },
       });
       return count;
     });

@@ -17,6 +17,7 @@ import {
   recordProgress,
   recordTitle,
   recoverStale,
+  releaseLease,
 } from "../src/worker/queue.ts";
 
 let repositoryId: string;
@@ -55,6 +56,9 @@ afterAll(async () => {
 
 const job = (headSha: string, number = 7) =>
   enqueue({ repositoryId, number, headSha, trigger: "webhook" });
+
+const HOUR_AGO = () => new Date(Date.now() - 60 * 60 * 1000);
+const expireLease = (id: string) => prisma.reviewJob.update({ where: { id }, data: { leaseExpiresAt: HOUR_AGO() } });
 
 describe("enqueue", () => {
   it("returns the existing job for the same head instead of duplicating it", async () => {
@@ -137,16 +141,62 @@ describe("claimNext", () => {
     expect(claimed?.progress).toBeNull();
   });
 
-  it("waits for a change's running job to finish before claiming its next one", async () => {
+  it("holds a change's lease from the claim", async () => {
+    await job("aaa");
+
+    const claimed = (await claimNext(Number.MAX_SAFE_INTEGER, 60_000))!;
+
+    expect(claimed.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now() + 50_000);
+  });
+
+  it("waits for a change's run to return, not just complete, before claiming its next job", async () => {
     await job("aaa");
     const running = (await claimNext())!;
     const newer = await job("bbb");
 
     expect(await claimNext()).toBeNull();
 
+    // Stored, but the run is still syncing findings.
     await complete(running.id, { status: "completed", verdict: "pass" });
+    expect(await claimNext()).toBeNull();
+
+    await releaseLease(running.id, running.attempts);
+    expect((await claimNext())?.id).toBe(newer.id);
+  });
+
+  it("keeps a change busy while a run cancelled from the dashboard is still stopping", async () => {
+    await job("aaa");
+    const running = (await claimNext())!;
+    const newer = await job("bbb");
+    const { workspaceId } = await prisma.forgeConnection.findFirstOrThrow();
+
+    await cancelJob(running.id, workspaceId, "Review cancelled");
+    expect(await claimNext()).toBeNull();
+
+    await releaseLease(running.id, running.attempts);
+    expect((await claimNext())?.id).toBe(newer.id);
+  });
+
+  it("keeps a change busy after a timeout until the run's lease runs out", async () => {
+    await job("aaa");
+    const running = (await claimNext())!;
+    const newer = await job("bbb");
+
+    await fail(running.id, "Review exceeded the maximum run time");
+    expect(await claimNext()).toBeNull();
+
+    await expireLease(running.id);
+    expect((await claimNext())?.id).toBe(newer.id);
+  });
+
+  it("frees the change of a dead worker once its lease expires, before recovery", async () => {
+    await job("aaa");
+    const dead = (await claimNext())!;
+    const newer = await job("bbb");
+    await expireLease(dead.id);
 
     expect((await claimNext())?.id).toBe(newer.id);
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: dead.id } })).status).toBe("running");
   });
 
   it("still claims other changes while one change is running", async () => {
@@ -276,6 +326,21 @@ describe("cancelQueuedForClosedChange", () => {
 });
 
 describe("recoverStale", () => {
+  it("supersedes a stale job whose change already runs a newer head", async () => {
+    const stale = await job("aaa");
+    await claimNext();
+    await prisma.reviewJob.update({ where: { id: stale.id }, data: { lockedAt: HOUR_AGO(), leaseExpiresAt: HOUR_AGO() } });
+    const newer = await job("bbb");
+    await claimNext();
+
+    expect((await recoverStale(15 * 60 * 1000, 3)).count).toBe(1);
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: stale.id } })).toMatchObject({
+      status: "superseded",
+      leaseExpiresAt: null,
+    });
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: newer.id } })).status).toBe("running");
+  });
+
   it("supersedes a stale job when a newer head of its change is queued", async () => {
     const stale = await job("aaa");
     await claimNext();
@@ -329,10 +394,10 @@ describe("heartbeat", () => {
     const longAgo = new Date(Date.now() - 60 * 60 * 1000);
     await prisma.reviewJob.update({
       where: { id: slow.id },
-      data: { status: "running", lockedAt: longAgo, attempts: 1 },
+      data: { status: "running", lockedAt: longAgo, attempts: 1, leaseExpiresAt: new Date() },
     });
 
-    await heartbeat(slow.id);
+    await heartbeat(slow.id, 1);
 
     // The bumped lock is now fresh, so recovery leaves the job running.
     expect((await recoverStale(15 * 60 * 1000, 3)).count).toBe(0);
@@ -346,11 +411,41 @@ describe("heartbeat", () => {
     const claimed = (await claimNext())!;
     await complete(claimed.id, { status: "completed", verdict: "pass" });
 
-    await heartbeat(done.id);
+    await heartbeat(done.id, claimed.attempts);
 
     const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: done.id } });
     expect(stored.status).toBe("completed");
     expect(stored.lockedAt).toBeNull();
+  });
+
+  it("renews the lease of a run still stopping after a cancel, but not its lock", async () => {
+    await job("aaa");
+    const claimed = (await claimNext())!;
+    const { workspaceId } = await prisma.forgeConnection.findFirstOrThrow();
+    await cancelJob(claimed.id, workspaceId, "Review cancelled");
+    await expireLease(claimed.id);
+
+    await heartbeat(claimed.id, claimed.attempts, 60_000);
+
+    const stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
+    expect(stored).toMatchObject({ status: "cancelled", lockedAt: null });
+    expect(stored.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("leaves another attempt's lease alone, and a released one released", async () => {
+    await job("aaa");
+    const claimed = (await claimNext())!;
+    await expireLease(claimed.id);
+
+    await heartbeat(claimed.id, claimed.attempts - 1, 60_000);
+    await releaseLease(claimed.id, claimed.attempts - 1);
+    let stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
+    expect(stored.leaseExpiresAt!.getTime()).toBeLessThan(Date.now());
+
+    await releaseLease(claimed.id, claimed.attempts);
+    await heartbeat(claimed.id, claimed.attempts, 60_000);
+    stored = await prisma.reviewJob.findUniqueOrThrow({ where: { id: claimed.id } });
+    expect(stored.leaseExpiresAt).toBeNull();
   });
 });
 
@@ -377,6 +472,24 @@ describe("claimState", () => {
     await cancelForDisabledRepositories([repositoryId], DISABLED_REASON);
 
     expect(await claimState(claimed.id, claimed.attempts)).toBe("disabled");
+  });
+
+  it("is lost once a newer job for the change has started", async () => {
+    await job("aaa");
+    const claimed = (await claimNext())!;
+    await expireLease(claimed.id);
+    await job("bbb");
+    await claimNext();
+
+    expect(await claimState(claimed.id, claimed.attempts)).toBe("lost");
+  });
+
+  it("stays owned while a newer job for the change only waits", async () => {
+    await job("aaa");
+    const claimed = (await claimNext())!;
+    await job("bbb");
+
+    expect(await claimState(claimed.id, claimed.attempts)).toBe("owned");
   });
 
   it("is lost once the job was failed", async () => {
