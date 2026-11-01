@@ -27,6 +27,12 @@ export function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" })
 }
 
+export function localDateStamp(date = new Date()) {
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
 // Short elapsed time, e.g. "42s", "3m 05s", "1h 02m", "2d 04h".
 export function formatDuration(ms: number) {
   const seconds = Math.max(0, Math.round(ms / 1000))
