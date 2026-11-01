@@ -34,6 +34,16 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   explains what it keeps and why it may be disabled, and the Model,
   Temperature, Max output tokens and Context budget descriptions match what
   the server does (#194).
+- The Finding Types tab is regrouped into Severity, What gets reported,
+  Accuracy, Scope and context, Static analysis and Fixes, with a summary panel
+  beside it showing what a review reports and blocks on, unsaved edits
+  included. A severity scale labels each severity as blocking, reported or
+  hidden, and warns when the block level sits under the report level (those
+  findings are dropped before they can block). Caller depth is greyed out
+  while Surrounding code is off, and the agent limits unless Review context is
+  Agentic. Categories have descriptions, a count and All/None buttons, and Min
+  confidence has a slider. On every tab, a field's effective value now sits
+  beside its label and the "leave empty" hint moved behind an info icon.
 
 ### Fixed
 

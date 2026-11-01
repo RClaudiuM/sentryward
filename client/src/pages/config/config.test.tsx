@@ -245,7 +245,7 @@ describe("Configuration page", { timeout: 20_000 }, () => {
       expect(screen.getByRole("group", { name })).toBeInTheDocument()
     }
     await openTab("Finding Types")
-    for (const name of ["Severity", "What gets reported", "Review rules"]) {
+    for (const name of ["Severity", "What gets reported", "Accuracy", "Scope and context", "Static analysis", "Fixes"]) {
       expect(screen.getByRole("group", { name })).toBeInTheDocument()
     }
 
@@ -1457,5 +1457,82 @@ describe("LLM tab", { timeout: 20_000 }, () => {
     await userEvent.click(screen.getByRole("combobox", { name: "Thinking" }))
     await userEvent.click(screen.getByRole("option", { name: "Off" }))
     expect(screen.getByLabelText("Temperature")).toBeEnabled()
+  })
+})
+
+describe("Finding Types tab", { timeout: 20_000 }, () => {
+  it("summarises the tab with unsaved edits and draws the severity scale", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=findings" })
+
+    const summary = await screen.findByRole("region", { name: "Findings summary" })
+    const scale = await within(summary).findByRole("list", { name: "Severity scale" })
+    // Floor minor, block critical: critical blocks, the rest is reported.
+    expect(within(scale).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "critical: Blocks",
+      "major: Reported",
+      "minor: Reported",
+    ])
+    expect(within(summary).getByText("2 of 3")).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("combobox", { name: "Block at or above" }))
+    await userEvent.click(screen.getByRole("option", { name: "major" }))
+    expect(within(scale).getAllByRole("listitem")[1]).toHaveTextContent("major: Blocks")
+  })
+
+  it("warns when the block level is under the report level", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=findings" })
+
+    await userEvent.click(await screen.findByRole("combobox", { name: "Report findings at or above" }))
+    await userEvent.click(screen.getByRole("option", { name: "critical" }))
+    await userEvent.click(screen.getByRole("combobox", { name: "Block at or above" }))
+    await userEvent.click(screen.getByRole("option", { name: "minor" }))
+
+    // Under the floor a finding is dropped, so it shows as hidden, not blocking.
+    const summary = screen.getByRole("region", { name: "Findings summary" })
+    expect(within(summary).getAllByRole("listitem").at(-1)).toHaveTextContent("minor: Hidden")
+    expect(screen.getAllByText(/Blocking starts at critical/)).toHaveLength(2)
+  })
+
+  it("greys out the agent limits unless context is agentic, and caller depth without surrounding code", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=findings" })
+
+    const steps = await screen.findByLabelText("Agent steps")
+    await waitFor(() => expect(steps).toBeDisabled())
+    await userEvent.click(screen.getByRole("combobox", { name: "Review context" }))
+    await userEvent.click(screen.getByRole("option", { name: "Agentic" }))
+    expect(steps).toBeEnabled()
+    expect(screen.getByLabelText("Agent searches")).toBeEnabled()
+
+    expect(screen.getByLabelText("Caller depth")).toBeEnabled()
+    await userEvent.click(screen.getByRole("switch", { name: "Surrounding code" }))
+    expect(screen.getByLabelText("Caller depth")).toBeDisabled()
+  })
+
+  it("selects all or no categories, counting what is on", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=findings" })
+
+    expect(await screen.findByText("2 of 3 on")).toBeInTheDocument()
+    await userEvent.click(screen.getByRole("button", { name: "All" }))
+    expect(screen.getByText("3 of 3 on")).toBeInTheDocument()
+    expect(screen.getByRole("checkbox", { name: "style" })).toBeChecked()
+    expect(screen.getByRole("button", { name: "All" })).toBeDisabled()
+
+    await userEvent.click(screen.getByRole("button", { name: "None" }))
+    expect(screen.getByText("0 of 3 on")).toBeInTheDocument()
+    expect(screen.getByText("Choose at least one category")).toBeInTheDocument()
+  })
+
+  it("keeps the confidence slider in step with the input", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration?tab=findings" })
+
+    const slider = await screen.findByRole("slider", { name: "Min confidence slider" })
+    await waitFor(() => expect(slider).toHaveValue("0.5"))
+    await userEvent.type(screen.getByLabelText("Min confidence"), "0.8")
+    expect(slider).toHaveValue("0.8")
   })
 })
