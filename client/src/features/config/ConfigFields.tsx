@@ -18,7 +18,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { ChevronRight, Plus, RotateCcw, Trash2 } from "lucide-react"
+import { ChevronRight, Info, Plus, RotateCcw, Trash2 } from "lucide-react"
 import { SearchableSelect } from "@/components/SearchableSelect"
 import { TagInput } from "@/components/TagInput"
 import { Badge } from "@/components/ui/badge"
@@ -67,7 +67,9 @@ import {
 } from "./api"
 import { LlmRunSummary } from "./LlmRunSummary"
 import { ModelCombobox, type ModelSuggestions } from "./ModelCombobox"
+import { FindingsSummary } from "./FindingsSummary"
 import { ReviewPreview } from "./ReviewPreview"
+import { SeverityScale } from "./SeverityScale"
 import { CONFIG_TABS, TAB_ERRORS, type ConfigTab } from "./tabs"
 import {
   AUTO,
@@ -263,7 +265,7 @@ const THINKING_OPTIONS = [
 const CHOICE_INFO: Record<
   ChoiceName,
   // nullLabel names a saved null, e.g. "same as thinking".
-  { label: string; description: string; options: { value: string; label: string }[]; nullLabel?: string }
+  { label: string; description: ReactNode; options: { value: string; label: string }[]; nullLabel?: string }
 > = {
   review: {
     label: "Code review trigger",
@@ -302,8 +304,19 @@ const CHOICE_INFO: Record<
   },
   context: {
     label: "Review context",
-    description:
-      "Static shows each pass the diff and the code gathered for it. Agentic also lets the model read files and search code until it reports, within the agent limits below; models that cannot call tools fall back to static.",
+    // One line per option, so the two modes compare at a glance.
+    description: (
+      <span className="flex flex-col gap-0.5">
+        <span>
+          <strong className="font-medium text-foreground">Static</strong>: each pass sees the diff and the code
+          gathered for it.
+        </span>
+        <span>
+          <strong className="font-medium text-foreground">Agentic</strong>: the model may also read files and search
+          code until it reports, within the agent limits below. Models that cannot call tools fall back to static.
+        </span>
+      </span>
+    ),
     options: [
       { value: "static", label: "Static" },
       { value: "agentic", label: "Agentic" },
@@ -389,6 +402,17 @@ function Section(props: { title: string; description: ReactNode; children: React
 // Switches as rows of one bordered list, so a run of them reads as a group.
 function ToggleList(props: { children: ReactNode }) {
   return <div className="divide-y rounded-lg border *:px-4 *:py-3">{props.children}</div>
+}
+
+// A row of a ToggleList that only applies while the row above is on, indented
+// under it so the two read as one setting. The inner wrapper keeps the list's
+// own row padding on the outer one.
+function Nested(props: { children: ReactNode }) {
+  return (
+    <div>
+      <div className="ml-2 border-l-2 pl-4">{props.children}</div>
+    </div>
+  )
 }
 
 const NUMBER_INFO: Record<NumberName, { label: string; description: string }> = {
@@ -479,6 +503,34 @@ function ResetButton(props: { label: string; hint?: string; onClick: () => void;
   )
 }
 
+// What leaving a field empty gives, behind an icon beside the label: the
+// placeholder already shows the inherited value, so the sentence is a detail.
+// Screen readers still get it through the field's description.
+function EmptyHint(props: { hint: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" aria-hidden tabIndex={-1} className="text-muted-foreground hover:text-foreground">
+          <Info className="size-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{props.hint}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+// The label row shared by the fields: the label, its tags, and the value a
+// review gets when it comes from somewhere else, so it reads beside the name
+// instead of as another line under the description.
+function LabelRow(props: { children: ReactNode; effective?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      {props.children}
+      {props.effective && <span className="text-xs text-muted-foreground">{props.effective}</span>}
+    </div>
+  )
+}
+
 // A text field where empty means "not set here"; `emptyHint` says what that gives.
 function TextField(props: {
   id: string
@@ -509,7 +561,10 @@ function TextField(props: {
   }
   return (
     <Field data-disabled={props.disabled} data-invalid={props.error ? true : undefined}>
-      <FieldLabel htmlFor={props.id}>{props.label}</FieldLabel>
+      <LabelRow effective={props.effective}>
+        <FieldLabel htmlFor={props.id}>{props.label}</FieldLabel>
+        <EmptyHint hint={props.emptyHint} />
+      </LabelRow>
       {props.multiline ? (
         <Textarea {...shared} rows={4} onChange={(e) => props.onChange(e.target.value)} />
       ) : (
@@ -524,13 +579,27 @@ function TextField(props: {
         />
       )}
       <FieldDescription>
-        {props.description} {props.emptyHint}
+        {props.description}
+        <span className="sr-only"> {props.emptyHint}</span>
       </FieldDescription>
       {props.extra}
-      {props.effective && <FieldDescription className="text-xs">{props.effective}</FieldDescription>}
       {props.error && <FieldError>{props.error}</FieldError>}
     </Field>
   )
+}
+
+// One line per category in CATEGORIES (server/src/review/core/severity.ts), so
+// the picker says what each one covers. A category missing here shows no line.
+const CATEGORY_INFO: Record<string, string> = {
+  security: "Injection, auth, secrets and unsafe data handling.",
+  bug: "Code that does not do what it is meant to.",
+  performance: "Needless work, slow queries and memory growth.",
+  logic: "Wrong conditions, edge cases and ordering.",
+  reliability: "Error handling, retries, races and resource leaks.",
+  maintainability: "Code that is hard to change safely later.",
+  testing: "Missing or weak tests for the change.",
+  style: "Naming, formatting and local conventions.",
+  docs: "Comments and docs that are missing or out of date.",
 }
 
 function CategoriesField(props: {
@@ -559,9 +628,15 @@ function CategoriesField(props: {
 
   return (
     <FieldSet data-disabled={disabled} data-invalid={props.error ? true : undefined}>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <FieldLegend variant="label">Categories</FieldLegend>
+        {checked && (
+          <span className="text-xs text-muted-foreground">
+            {checked.length} of {props.options.length} on
+          </span>
+        )}
         {overridden && <Badge variant="secondary">Overridden</Badge>}
+        {props.effective && <span className="text-xs text-muted-foreground">{props.effective}</span>}
         {overridden && (
           <ResetButton
             label="Categories"
@@ -570,30 +645,58 @@ function CategoriesField(props: {
             disabled={props.disabled}
           />
         )}
+        <div className="ml-auto flex gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={() => props.onChange([...props.options])}
+            disabled={disabled || checked?.length === props.options.length}
+          >
+            All
+          </Button>
+          {/* Saving none is refused by the schema; the field error says why. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={() => props.onChange([])}
+            disabled={disabled || checked?.length === 0}
+          >
+            None
+          </Button>
+        </div>
       </div>
       <FieldDescription>What kinds of issues the reviewer looks for.</FieldDescription>
-      <div className="grid grid-cols-2 gap-2 @md/field-group:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2 @md/field-group:grid-cols-3 @2xl/field-group:grid-cols-4">
         {props.options.map((category) => {
           const id = `category-${category}`
           // A label wrapping a field renders as a selectable card (see FieldLabel).
           return (
             <FieldLabel key={category} htmlFor={id}>
               <Field orientation="horizontal" data-disabled={disabled}>
+                {/* Named by the category alone; the line under it describes it. */}
                 <Checkbox
                   id={id}
+                  aria-label={category}
+                  aria-describedby={CATEGORY_INFO[category] ? `${id}-description` : undefined}
                   checked={checked?.includes(category) ?? false}
                   onCheckedChange={(on) => toggle(category, on === true)}
                   disabled={disabled}
                 />
                 <FieldContent>
                   <FieldTitle className="capitalize">{category}</FieldTitle>
+                  {CATEGORY_INFO[category] && (
+                    <FieldDescription id={`${id}-description`} className="text-xs">
+                      {CATEGORY_INFO[category]}
+                    </FieldDescription>
+                  )}
                 </FieldContent>
               </Field>
             </FieldLabel>
           )
         })}
       </div>
-      {props.effective && <FieldDescription className="text-xs">{props.effective}</FieldDescription>}
       {props.error && <FieldError>{props.error}</FieldError>}
     </FieldSet>
   )
@@ -1048,7 +1151,9 @@ function ChoiceField(props: {
   const value = !inherit && props.value === INHERIT ? (props.fallback ?? INHERIT) : props.value
   return (
     <Field data-disabled={props.disabled} data-invalid={props.error ? true : undefined}>
-      <FieldLabel htmlFor={props.id}>{props.label}</FieldLabel>
+      <LabelRow effective={props.effective}>
+        <FieldLabel htmlFor={props.id}>{props.label}</FieldLabel>
+      </LabelRow>
       <SearchableSelect
         id={props.id}
         value={value}
@@ -1061,7 +1166,6 @@ function ChoiceField(props: {
       />
       {props.description && <FieldDescription>{props.description}</FieldDescription>}
       {props.hint}
-      {props.effective && <FieldDescription className="text-xs">{props.effective}</FieldDescription>}
       {props.error && <FieldError>{props.error}</FieldError>}
     </Field>
   )
@@ -1089,12 +1193,11 @@ function ToggleField(props: {
   return (
     <Field orientation="horizontal" data-disabled={disabled}>
       <FieldContent>
-        <div className="flex items-center gap-2">
+        <LabelRow effective={props.effective}>
           <FieldLabel htmlFor={id}>{label}</FieldLabel>
           {overridden && <Badge variant="secondary">Overridden</Badge>}
-        </div>
+        </LabelRow>
         <FieldDescription>{description}</FieldDescription>
-        {props.effective && <FieldDescription className="text-xs">{props.effective}</FieldDescription>}
       </FieldContent>
       <div className="flex items-center gap-2">
         {overridden && (
@@ -1429,6 +1532,65 @@ export function ConfigFields(props: {
       ? inherited?.review.verify
       : form.choices.verify
   const verifyOn = verifyChoice !== "off"
+
+  // What a review would run with for one field, unsaved edits included, the
+  // same way as verifyChoice: the repository file wins, a repository that
+  // follows the global config shows the inherited value, and an unset field
+  // inherits. undefined while the inherited values load.
+  function resolvedChoice(name: ChoiceName) {
+    const spec = CHOICES.find((choice) => choice.name === name)!
+    const path = `${spec.section}.${choiceKey(spec)}`
+    const raw = fromRepoFile(path)
+      ? at(config, path)
+      : disabled || form.choices[name] === INHERIT
+        ? at(inherited, path)
+        : form.choices[name]
+    return raw === undefined || raw === null ? undefined : String(raw)
+  }
+  function resolvedFlag(name: FlagName) {
+    const { section } = FLAGS.find((flag) => flag.name === name)!
+    if (fromRepoFile(`${section}.${name}`))
+      return (config?.[section] as Record<string, unknown> | undefined)?.[name] as boolean | undefined
+    return disabled ? inheritedFlag(name) : (form.flags[name] ?? inheritedFlag(name))
+  }
+  function resolvedNumber(name: NumberName) {
+    const spec = NUMBERS.find((number) => number.name === name)!
+    const path = `${spec.section}.${name}`
+    const typed = form.numbers[name].trim()
+    const raw = fromRepoFile(path) ? at(config, path) : disabled || !typed ? at(inherited, path) : Number(typed)
+    return typeof raw === "number" ? raw : undefined
+  }
+  function resolvedText(key: "severityFloor" | "blockOn") {
+    const path = `review.${key}`
+    if (fromRepoFile(path)) return config?.review[key]
+    return disabled || form[key] === INHERIT ? inherited?.review[key] : form[key]
+  }
+  const contextChoice = resolvedChoice("context")
+  // Only a value known to be off greys a field out, so nothing flickers while
+  // the inherited values load.
+  const agentLimitsOff = contextChoice === "static"
+  const fileContextOff = resolvedFlag("fileContext") === false
+  const severityFloorValue = resolvedText("severityFloor")
+  const blockOnValue = resolvedText("blockOn")
+
+  // A slider beside the confidence input, for a value that is easier to judge
+  // on a scale. The input stays the field: empty still inherits, and the
+  // slider shows the inherited value until it is moved.
+  const confidenceSpec = NUMBERS.find((number) => number.name === "minConfidence")!
+  const confidenceValue = resolvedNumber("minConfidence")
+  const confidenceSlider = (
+    <input
+      type="range"
+      aria-label="Min confidence slider"
+      className="w-full accent-primary disabled:opacity-50"
+      min={confidenceSpec.min}
+      max={confidenceSpec.max}
+      step={confidenceSpec.step}
+      value={confidenceValue ?? confidenceSpec.min}
+      onChange={(e) => setNumber("minConfidence")(e.target.value)}
+      disabled={locked("review.minConfidence") || confidenceValue === undefined}
+    />
+  )
   const walkthroughValue = fromRepoFile("output.walkthrough")
     ? config?.output.walkthrough
     : disabled
@@ -1713,6 +1875,7 @@ export function ConfigFields(props: {
               disabled={locked("review.blockOn")}
             />
           </div>
+          <SeverityScale severities={schema.data?.severities ?? []} floor={severityFloorValue} blockOn={blockOnValue} />
         </Section>
         <FieldSeparator />
         <Section
@@ -1730,29 +1893,49 @@ export function ConfigFields(props: {
             error={errors.categories}
             disabled={locked("review.categories")}
           />
+          <div className="grid gap-4 @md/field-group:grid-cols-2">{numberField("maxFindings")}</div>
+        </Section>
+        <FieldSeparator />
+        <Section title="Accuracy" description="How findings are checked before they count.">
+          <ToggleList>{toggles(["requireEvidence"])}</ToggleList>
           <div className="grid gap-4 @md/field-group:grid-cols-2">
-            {numberField("maxFindings")}
-            {numberField("minConfidence")}
+            {choiceField("verify")}
+            {numberField("minConfidence", confidenceSlider)}
           </div>
+          <ToggleList>{toggles(["suppressIgnored"])}</ToggleList>
         </Section>
         <FieldSeparator />
-        <Section title="Review rules" description="How findings are checked and how fixes are offered.">
-          <ToggleList>
-            {toggles(["requireEvidence", "suppressIgnored", "fullFile", "fileContext", "committableSuggestions"])}
-          </ToggleList>
-          {choiceField("verify")}
-          <ToggleList>{toggles(["toolFindings"])}</ToggleList>
-          <ToggleList>{toggles(["toolFindingsBlock"], !toolFindingsOn)}</ToggleList>
-        </Section>
-        <FieldSeparator />
-        <Section title="Review context" description="How much code each pass may read beyond its diff.">
+        <Section
+          title="Scope and context"
+          description="Which lines may be commented on, and how much code each pass reads beyond its diff."
+        >
+          <ToggleList>{toggles(["fullFile"])}</ToggleList>
           {choiceField("context")}
-          {numberField("impactDepth")}
-          <div className="grid gap-4 @md/field-group:grid-cols-3">
-            {numberField("maxSteps")}
-            {numberField("maxToolTokens")}
-            {numberField("maxSearches")}
-          </div>
+          <ToggleList>
+            {toggles(["fileContext"])}
+            {/* Callers are only followed while surrounding code is gathered. */}
+            <Nested>{numberField("impactDepth", undefined, fileContextOff)}</Nested>
+          </ToggleList>
+          <FieldSet data-disabled={agentLimitsOff || undefined}>
+            <FieldLegend variant="label">Agent limits</FieldLegend>
+            <FieldDescription>Only used when Review context is Agentic.</FieldDescription>
+            <div className="grid gap-4 @md/field-group:grid-cols-3">
+              {numberField("maxSteps", undefined, agentLimitsOff)}
+              {numberField("maxToolTokens", undefined, agentLimitsOff)}
+              {numberField("maxSearches", undefined, agentLimitsOff)}
+            </div>
+          </FieldSet>
+        </Section>
+        <FieldSeparator />
+        <Section title="Static analysis" description="Findings that analyzers on the forge already reported.">
+          <ToggleList>
+            {toggles(["toolFindings"])}
+            <Nested>{toggles(["toolFindingsBlock"], !toolFindingsOn)}</Nested>
+          </ToggleList>
+        </Section>
+        <FieldSeparator />
+        <Section title="Fixes" description="How fixes are offered on the change.">
+          <ToggleList>{toggles(["committableSuggestions"])}</ToggleList>
         </Section>
       </>
     ),
@@ -1903,7 +2086,78 @@ export function ConfigFields(props: {
   }
 
   // A sticky panel beside the settings of a tab, where it has one.
+  // The Finding Types fields, for the summary's override and file counts.
+  const findingsFlags: FlagName[] = [
+    "requireEvidence",
+    "suppressIgnored",
+    "fullFile",
+    "fileContext",
+    "committableSuggestions",
+    "toolFindings",
+    "toolFindingsBlock",
+  ]
+  const findingsNumbers: NumberName[] = ["maxFindings", "minConfidence", "impactDepth", "maxSteps", "maxToolTokens", "maxSearches"]
+  const findingsChoices: ChoiceName[] = ["verify", "context"]
+  const findingsPaths = [
+    "review.severityFloor",
+    "review.blockOn",
+    "review.categories",
+    ...findingsFlags.map((name) => `${FLAGS.find((flag) => flag.name === name)!.section}.${name}`),
+    ...findingsNumbers.map((name) => `${NUMBERS.find((number) => number.name === name)!.section}.${name}`),
+    ...findingsChoices.map((name) => {
+      const spec = CHOICES.find((choice) => choice.name === name)!
+      return `${spec.section}.${choiceKey(spec)}`
+    }),
+  ]
+  // A repository that follows the global config keeps its overrides but does
+  // not use them, so they are not counted.
+  const findingsOverrides =
+    isRepo && !disabled
+      ? [form.severityFloor !== INHERIT, form.blockOn !== INHERIT, form.categories !== undefined]
+          .concat(findingsFlags.map((name) => form.flags[name] !== undefined))
+          .concat(findingsNumbers.map((name) => form.numbers[name].trim() !== ""))
+          .concat(findingsChoices.map((name) => form.choices[name] !== INHERIT))
+          .filter(Boolean).length
+      : undefined
+  const findingsFromFile = isRepo ? findingsPaths.filter(fromRepoFile).length : 0
+  const choiceLabel = (name: ChoiceName, value: string | undefined) =>
+    value === undefined ? undefined : (CHOICE_INFO[name].options.find((option) => option.value === value)?.label ?? value)
+  const resolvedCategories = fromRepoFile("review.categories")
+    ? config?.review.categories
+    : disabled
+      ? inherited?.review.categories
+      : (form.categories ?? inherited?.review.categories)
+
   const asides: Partial<Record<ConfigTab, { node: ReactNode; grid: string }>> = {
+    findings: {
+      grid: "@6xl:grid-cols-[minmax(0,1fr)_22rem]",
+      node: (
+        <FindingsSummary
+          severities={schema.data?.severities ?? []}
+          floor={severityFloorValue}
+          blockOn={blockOnValue}
+          categories={resolvedCategories}
+          categoryCount={schema.data?.categories.length ?? 0}
+          maxFindings={resolvedNumber("maxFindings")}
+          minConfidence={resolvedNumber("minConfidence")}
+          verifyLabel={choiceLabel("verify", verifyChoice ?? undefined)}
+          context={contextChoice}
+          contextLabel={choiceLabel("context", contextChoice)}
+          agent={{
+            maxSteps: resolvedNumber("maxSteps"),
+            maxToolTokens: resolvedNumber("maxToolTokens"),
+            maxSearches: resolvedNumber("maxSearches"),
+          }}
+          fileContext={resolvedFlag("fileContext")}
+          impactDepth={resolvedNumber("impactDepth")}
+          toolFindings={resolvedFlag("toolFindings")}
+          toolFindingsBlock={resolvedFlag("toolFindingsBlock")}
+          overrides={findingsOverrides}
+          fromFile={findingsFromFile}
+          repoFile={props.repoFile}
+        />
+      ),
+    },
     display: {
       grid: "@5xl:grid-cols-2",
       node: (
