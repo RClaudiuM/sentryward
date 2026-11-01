@@ -1,11 +1,18 @@
 import type { Request, Response } from "express";
 import { HttpError } from "../lib/httpError.ts";
 import { prisma } from "../lib/prisma.ts";
-import { modelPriceIdParamSchema, saveModelPriceSchema } from "../schemas/modelPrices.schema.ts";
-import { listModelPrices } from "../services/modelPrices.ts";
+import { modelPriceIdParamSchema, modelPriceLookupSchema, saveModelPriceSchema } from "../schemas/modelPrices.schema.ts";
+import { listModelPrices, lookupModelPrice } from "../services/modelPrices.ts";
 
 export async function getModelPrices(req: Request, res: Response) {
   res.json(await listModelPrices(req.workspaceId!));
+}
+
+// For the settings page, which shows the price of whatever model is typed,
+// used by a review yet or not.
+export async function getModelPriceLookup(req: Request, res: Response) {
+  const { model } = modelPriceLookupSchema.parse(req.query);
+  res.json(await lookupModelPrice(req.workspaceId!, model));
 }
 
 // Keyed by model, so saving a model's price again replaces it.

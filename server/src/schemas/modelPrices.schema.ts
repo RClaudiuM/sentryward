@@ -4,13 +4,15 @@ import { z } from "zod";
 // magnitude is caught.
 const rate = z.number({ error: "Enter a price" }).min(0, "A price cannot be negative").max(10_000, "That price is too high");
 
+const modelId = z
+  .string()
+  .trim()
+  .min(1, "Enter a model")
+  .max(200)
+  .regex(/^[^\s]+$/, "A model id has no spaces");
+
 export const saveModelPriceSchema = z.object({
-  model: z
-    .string()
-    .trim()
-    .min(1, "Enter a model")
-    .max(200)
-    .regex(/^[^\s]+$/, "A model id has no spaces"),
+  model: modelId,
   input: rate,
   output: rate,
   cached: rate.nullable().optional(),
@@ -19,3 +21,5 @@ export const saveModelPriceSchema = z.object({
 });
 
 export const modelPriceIdParamSchema = z.object({ id: z.uuid() });
+
+export const modelPriceLookupSchema = z.object({ model: modelId });

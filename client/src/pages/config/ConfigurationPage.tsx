@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { Link, useSearchParams } from "react-router"
 import { AlertTriangle, Globe, Plus } from "lucide-react"
 import { PageHeader } from "@/components/PageHeader"
@@ -7,6 +7,7 @@ import { SearchableSelect, type SelectOptionGroup } from "@/components/Searchabl
 import { Alert, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { hasOverrides, useGlobalConfig } from "@/features/config/api"
@@ -14,7 +15,6 @@ import { DEFAULT_CONFIG_TAB, isConfigTab, type ConfigTab } from "@/features/conf
 import { GlobalConfigForm } from "@/features/config/GlobalConfigForm"
 import { FollowGlobalSwitch, RepoConfigForm } from "@/features/config/RepoConfigForm"
 import { useRepos } from "@/features/forge/api"
-import { cn } from "@/lib/utils"
 
 const GLOBAL = "global"
 
@@ -70,12 +70,22 @@ export function ConfigurationPage() {
     update({ repo: value === GLOBAL ? null : value })
   }
 
+  // The card stays mounted while the forms load, so an open scope picker is
+  // not reset; a loaded form portals its Profile field into the slot.
+  const [profileSlot, setProfileSlot] = useState<HTMLElement | null>(null)
+
   let body
   // Wait for the repository list before falling back, so a ?repo= link does not flash the global config.
   if (params.has("repo") && repos.isPending) body = <Skeleton className="h-96 w-full" />
   else if (selected)
     body = (
-      <RepoConfigForm key={selected.id} repo={selected} tab={tab} onTabChange={onTabChange} />
+      <RepoConfigForm
+        key={selected.id}
+        repo={selected}
+        tab={tab}
+        onTabChange={onTabChange}
+        profileSlot={profileSlot}
+      />
     )
   else if (global.isPending) body = <Skeleton className="h-96 w-full" />
   else if (global.isError)
@@ -85,57 +95,68 @@ export function ConfigurationPage() {
         <AlertTitle>{global.error.message}</AlertTitle>
       </Alert>
     )
-  else body = <GlobalConfigForm global={global.data} tab={tab} onTabChange={onTabChange} />
+  else body = <GlobalConfigForm global={global.data} tab={tab} onTabChange={onTabChange} profileSlot={profileSlot} />
 
   return (
     <PageShell className="@container">
-      <PageHeader title="Review settings"description="Choose what reviews look for, how they are published and when they block." />
-      <div className="flex max-w-5xl flex-col gap-3 rounded-xl border bg-muted/30 p-4 compact:p-3 spacious:p-6">
-        <div className="flex flex-wrap items-center gap-3">
-          <Label htmlFor="config-scope">Scope</Label>
-          <SearchableSelect
-            id="config-scope"
-            className="max-w-sm"
-            value={selected?.id ?? GLOBAL}
-            onValueChange={selectScope}
-            searchPlaceholder="Search repositories..."
-            emptyText="No matching repositories."
-            options={scopeOptions}
-          />
-          {selected && (
-            <div className="flex items-center gap-2">
-              <FollowGlobalSwitch repo={selected} id="follow-global" />
-              <Label htmlFor="follow-global">Follow global config</Label>
-            </div>
-          )}
-          {repos.isSuccess && sorted.length === 0 && (
-            <Button variant="ghost" size="sm" asChild>
-              <Link to="/repositories">
-                <Plus />
-                Add repositories
-              </Link>
-            </Button>
-          )}
-          {repos.isError && <p className="text-sm text-destructive">{repos.error.message}</p>}
+      <PageHeader title="Review settings" description="Choose what reviews look for, how they are published and when they block." />
+      {/* One card for what applies to every tab: the scope and the profile. */}
+      <div
+        role="region"
+        aria-label="Scope and profile"
+        className="rounded-xl border bg-muted/30 p-4 compact:p-3 spacious:p-6"
+      >
+        {/* Capped so each select stays a comfortable width on a wide page. The
+            scope is built from the same Field parts as Profile so the two line up. */}
+        <div className="grid max-w-3xl items-start gap-4 @3xl:grid-cols-2">
+          <Field>
+            <FieldLabel htmlFor="config-scope">Scope</FieldLabel>
+            <SearchableSelect
+              id="config-scope"
+              value={selected?.id ?? GLOBAL}
+              onValueChange={selectScope}
+              searchPlaceholder="Search repositories..."
+              emptyText="No matching repositories."
+              options={scopeOptions}
+            />
+            <FieldDescription>
+              {!selected ? (
+                <>
+                  The global config applies to every repository. Repositories that do not follow it layer their own
+                  overrides on top, and a <code>.sentryward.yaml</code> in a repository still wins over both.
+                </>
+              ) : selected.followGlobal ? (
+                "Only the global config applies. Overrides are kept for when you stop following it."
+              ) : (
+                <>
+                  Overrides saved here sit on top of the global config and below a <code>.sentryward.yaml</code> in
+                  the repository.
+                </>
+              )}
+            </FieldDescription>
+            {selected && (
+              <div className="flex items-center gap-2">
+                <FollowGlobalSwitch repo={selected} id="follow-global" />
+                <Label htmlFor="follow-global">Follow global config</Label>
+              </div>
+            )}
+            {repos.isSuccess && sorted.length === 0 && (
+              <div>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link to="/repositories">
+                    <Plus />
+                    Add repositories
+                  </Link>
+                </Button>
+              </div>
+            )}
+            {repos.isError && <p className="text-sm text-destructive">{repos.error.message}</p>}
+          </Field>
+          <div ref={setProfileSlot} />
         </div>
-        <p className="text-sm text-muted-foreground">
-          {!selected ? (
-            <>
-              The global config applies to every repository. Repositories that do not follow it layer their own
-              overrides on top, and a <code>.sentryward.yaml</code> in a repository still wins over both.
-            </>
-          ) : selected.followGlobal ? (
-            "Only the global config applies. Overrides are kept for when you stop following it."
-          ) : (
-            <>
-              Overrides saved here sit on top of the global config and below a <code>.sentryward.yaml</code> in the
-              repository.
-            </>
-          )}
-        </p>
       </div>
-      {/* The Display tab splits the full width between its settings and the preview. */}
-      <div className={cn("flex flex-col", tab !== "display" && "max-w-5xl")}>{body}</div>
+      {/* Full width: the tabs lay out as a side rail and the LLM and Display tabs add a panel beside their settings. */}
+      <div className="flex flex-col">{body}</div>
     </PageShell>
   )
 }

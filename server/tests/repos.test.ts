@@ -750,6 +750,10 @@ describe("GET /api/config/schema", () => {
     expect(res.body.defaults.review.blockOn).toBe("critical");
     expect(Object.keys(res.body.profiles)).toEqual(["balanced", "fast", "strict", "security"]);
     expect(res.body.severities).toEqual(["critical", "major", "minor", "info"]);
+    // What the settings page resolves an "auto" context budget from.
+    expect(res.body.contextWindows.anthropic).toBe(200_000);
+    expect(res.body.defaultContextWindow).toBe(128_000);
+    expect(res.body.thinkingBudgets).toEqual({ off: 0, low: 2_000, medium: 8_000, high: 24_000 });
   });
 });
 

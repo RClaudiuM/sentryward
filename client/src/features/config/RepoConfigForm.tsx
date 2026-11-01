@@ -44,6 +44,7 @@ export function RepoConfigForm(props: {
   repo: ForgeRepo
   tab: ConfigTab
   onTabChange: (tab: ConfigTab) => void
+  profileSlot?: HTMLElement | null
 }) {
   const { repo } = props
   const resolved = useRepoConfig(repo.id)
@@ -118,6 +119,7 @@ export function RepoConfigForm(props: {
         onChange={setForm}
         tab={props.tab}
         onTabChange={props.onTabChange}
+        profileSlot={props.profileSlot}
         config={resolved.data?.config}
         sources={resolved.data?.sources}
         inherited={global.data?.config}

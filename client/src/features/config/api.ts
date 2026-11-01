@@ -236,6 +236,11 @@ export interface ConfigSchema {
   profiles: Record<string, ConfigOverride>
   severities: string[]
   categories: string[]
+  // What an "auto" context budget resolves from (server promptCeiling): the
+  // window per provider, less max tokens and the thinking budget.
+  contextWindows: Record<string, number>
+  defaultContextWindow: number
+  thinkingBudgets: Record<ThinkingLevel, number>
 }
 
 export function useConfigSchema() {

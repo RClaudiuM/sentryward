@@ -75,6 +75,24 @@ describe("/api/settings/model-prices", () => {
     expect(saved.body.models[1]).toEqual({ model: "openai/cx/my-router(medium)", builtIn: null, price: { input: 1, output: 4 } });
   });
 
+  it("looks up the price a review of any model gets now, with the built-in one", async () => {
+    const lookup = (model: string) =>
+      request(app).get(`/api/settings/model-prices/lookup?model=${encodeURIComponent(model)}`).set("Cookie", cookie);
+
+    const builtIn = await lookup("anthropic/claude-sonnet-5-5");
+    expect(builtIn.status).toBe(200);
+    expect(builtIn.body.price).toEqual(builtIn.body.builtIn);
+    expect(builtIn.body.price).toEqual(expect.objectContaining({ input: expect.any(Number), output: expect.any(Number) }));
+
+    expect((await lookup("openai/my-proxy")).body).toEqual({ model: "openai/my-proxy", price: null, builtIn: null });
+    await request(app).put("/api/settings/model-prices").set("Cookie", cookie).send({ model: "openai/my-proxy", input: 1.5, output: 6 });
+    expect((await lookup("openai/my-proxy")).body).toEqual({ model: "openai/my-proxy", price: { input: 1.5, output: 6 }, builtIn: null });
+
+    const missing = await request(app).get("/api/settings/model-prices/lookup").set("Cookie", cookie);
+    expect(missing.status).toBe(400);
+    expect(Object.keys(missing.body.errors)).toEqual(["model"]);
+  });
+
   it("rejects invalid prices with field errors", async () => {
     const res = await request(app)
       .put("/api/settings/model-prices")

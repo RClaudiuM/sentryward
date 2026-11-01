@@ -1,6 +1,6 @@
 import express, { Router } from "express";
 import { createToken, listTokens, revokeToken } from "../controllers/apiTokens.controller.ts";
-import { deleteModelPrice, getModelPrices, saveModelPrice } from "../controllers/modelPrices.controller.ts";
+import { deleteModelPrice, getModelPriceLookup, getModelPrices, saveModelPrice } from "../controllers/modelPrices.controller.ts";
 import { AVATAR_MAX_BYTES, AVATAR_TYPES, removeAvatar, uploadAvatar } from "../controllers/avatar.controller.ts";
 import {
   apiKeyCapabilities,
@@ -42,6 +42,7 @@ settingsRouter.delete("/api-keys/:provider", requireWorkspaceRole("admin"), dele
 // Prices belong to the workspace too: what its reviews' costs are worked out at.
 settingsRouter.use("/model-prices", requireWorkspace);
 settingsRouter.get("/model-prices", getModelPrices);
+settingsRouter.get("/model-prices/lookup", getModelPriceLookup);
 settingsRouter.put("/model-prices", requireWorkspaceRole("admin"), saveModelPrice);
 settingsRouter.delete("/model-prices/:id", requireWorkspaceRole("admin"), deleteModelPrice);
 settingsRouter.delete("/account", authLimiter, deleteAccount);
