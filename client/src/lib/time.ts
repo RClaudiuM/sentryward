@@ -8,6 +8,8 @@ const format = new Intl.RelativeTimeFormat("en", { numeric: "auto" })
 
 export function timeAgo(iso: string, now = Date.now()) {
   const diff = new Date(iso).getTime() - now
+  // An unparseable timestamp yields NaN; keep the old "just now" fallback.
+  if (Number.isNaN(diff)) return "just now"
   const abs = Math.abs(diff)
   if (abs < 60_000) return "just now"
 
@@ -16,6 +18,7 @@ export function timeAgo(iso: string, now = Date.now()) {
     const value = Math.round(abs / ms)
     if (value < max) return format.format(sign * value, unit)
   }
+  // Unreachable: "day" has no cap.
   return "just now"
 }
 

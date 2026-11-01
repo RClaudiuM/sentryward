@@ -33,4 +33,15 @@ describe("timeAgo", () => {
     expect(timeAgo(new Date(now + 59.9 * 60_000).toISOString(), now)).toBe("in 1 hour")
     expect(timeAgo(new Date(now + 23.9 * 3_600_000).toISOString(), now)).toBe("tomorrow")
   })
+
+  it("rounds halfway values the same way in the past and the future", () => {
+    expect(timeAgo(new Date(now - 90_000).toISOString(), now)).toBe("2 minutes ago")
+    expect(timeAgo(new Date(now + 90_000).toISOString(), now)).toBe("in 2 minutes")
+    expect(timeAgo(new Date(now - 36 * 3_600_000).toISOString(), now)).toBe("2 days ago")
+    expect(timeAgo(new Date(now + 36 * 3_600_000).toISOString(), now)).toBe("in 2 days")
+  })
+
+  it("returns 'just now' for an invalid timestamp", () => {
+    expect(timeAgo("not a date", now)).toBe("just now")
+  })
 })
