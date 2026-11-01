@@ -81,6 +81,38 @@ describe("execute", () => {
     expect(stored.lockedAt!.getTime()).toBeGreaterThan(longAgo.getTime());
   });
 
+  it("releases the change's lease once the run returns, or throws", async () => {
+    for (const runJob of [async () => {}, async () => Promise.reject(new Error("boom"))]) {
+      await prisma.reviewJob.deleteMany();
+      const job = await claimedJob();
+      expect(job.leaseExpiresAt).toBeInstanceOf(Date);
+
+      await execute(job, { runJob, heartbeatMs: 1000, maxRunMs: 60_000, notify: async () => {} });
+
+      expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } })).leaseExpiresAt).toBeNull();
+    }
+  });
+
+  it("keeps a timed-out run's lease, unrenewed, until that run returns", async () => {
+    const job = await claimedJob();
+    let finish!: () => void;
+    const late = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+
+    await execute(job, { runJob: () => late, heartbeatMs: 5, maxRunMs: 30, leaseMs: 60_000, notify: async () => {} });
+
+    // A beat already in flight when the timer stopped may still land.
+    await sleep(20);
+    const held = (await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } })).leaseExpiresAt!;
+    await sleep(30);
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } })).leaseExpiresAt).toEqual(held);
+
+    finish();
+    await sleep(30);
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: job.id } })).leaseExpiresAt).toBeNull();
+  });
+
   it("records a thrown error as the failure", async () => {
     const job = await claimedJob();
     const notify = vi.fn(async () => {});
