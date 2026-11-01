@@ -10,6 +10,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- A pull or merge request that is closed and then reopened without a new push
+  is reviewed again. The review cancelled by the close no longer counts as one
+  already done for that head, so the reopen webhook queues it instead of
+  answering `duplicate`. Closes #184.
 - A forge that accepts the connection but never answers no longer hangs a
   review or a webhook. Every forge API request, including each redirect hop,
   is now aborted after 30 seconds, so the worker fails the run and frees it
