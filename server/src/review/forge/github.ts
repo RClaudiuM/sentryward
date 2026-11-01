@@ -30,6 +30,23 @@ import {
   type ThreadTarget,
 } from "./types.ts";
 
+// GitHub search qualifiers (repo:, org:, user:, language:, path:, ...) let a
+// term widen the search outside the repository under review. search_code terms
+// come from the model and can be steered by PR content (DS-009), so strip every
+// qualifier token before binding the query to `repo:${project}`.
+const GITHUB_SEARCH_QUALIFIER =
+  /(?:^|\s)(?:repo|org|user|language|path|filename|extension|size|is|in|created|updated|author|committer|commenter|label|milestone|project|team|reviewed-by|assignee|involves|mentions|linked|interacts|sort|order|fork|archived|type|status|head|base|merged|draft|no|topic|stars|forks|good-first-issues|help-wanted-issues|pushed|pushed-after|pushed-before|created-after|created-before|updated-after|updated-before|closed-after|closed-before|merged-after|merged-before):[^\s]*/g;
+
+// Keeps only the code-search term, dropping GitHub qualifiers that could point
+// the query at other repositories. Throws when nothing searchable remains.
+export function sanitizeCodeSearchTerm(term: string): string {
+  const cleaned = term.replace(GITHUB_SEARCH_QUALIFIER, " ").trim().replace(/\s+/g, " ");
+  if (!cleaned) {
+    throw new ForgeError(400, `search term "${term}" contains only GitHub search qualifiers`);
+  }
+  return cleaned;
+}
+
 export interface GitHubAdapterOptions {
   host: string;
   token: () => Promise<string>;
@@ -390,7 +407,7 @@ export class GitHubAdapter implements ForgeAdapter, ForgePublisher, ForgeHooks, 
   // honoured. That suits finding callers: the files a change touches are in
   // its diff, and the rest rarely differ from the default branch.
   async searchCode(project: string, term: string, _ref: string): Promise<string[]> {
-    const query = `${term} repo:${project}`;
+    const query = `${sanitizeCodeSearchTerm(term)} repo:${project}`;
     const result = await this.http.json<{ items: { path: string }[] }>(
       `/search/code?q=${encodeURIComponent(query)}&per_page=${MAX_CODE_SEARCH_RESULTS}`,
     );

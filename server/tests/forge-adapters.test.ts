@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import jwt from "jsonwebtoken";
 import { describe, expect, it } from "vitest";
-import { GitHubAdapter } from "../src/review/forge/github.ts";
+import { GitHubAdapter, sanitizeCodeSearchTerm } from "../src/review/forge/github.ts";
 import { GitHubApp, githubApiBase } from "../src/review/forge/githubApp.ts";
 import { GitLabAdapter } from "../src/review/forge/gitlab.ts";
 import { ForgeError } from "../src/review/forge/http.ts";
@@ -398,6 +398,49 @@ describe("GitHubAdapter", () => {
     it("surfaces other failures", async () => {
       const { adapter: gh } = adapter([{ url: COMPARE, status: 502, body: { message: "Bad Gateway" } }]);
       await expect(gh.compareCommits("acme/web", "h1", "h2")).rejects.toBeInstanceOf(ForgeError);
+    });
+  });
+
+  describe("searchCode", () => {
+    it("binds the search to the reviewed repository when the term carries qualifiers", async () => {
+      const { adapter: gh, calls } = adapter([
+        { url: /\/search\/code\?q=/, body: { items: [{ path: "src/a.ts" }, { path: "src/a.ts" }] } },
+      ]);
+      const paths = await gh.searchCode("acme/web", "foo repo:other/repo user:attacker", "main");
+      expect(paths).toEqual(["src/a.ts"]);
+      expect(decodeURIComponent(calls[0]!.url)).toBe(
+        "https://api.github.com/search/code?q=foo repo:acme/web&per_page=20",
+      );
+    });
+
+    it("keeps ordinary terms and code-like colons untouched", async () => {
+      const { adapter: gh, calls } = adapter([
+        { url: /\/search\/code\?q=/, body: { items: [] } },
+      ]);
+      await gh.searchCode("acme/web", "schema:name", "main");
+      expect(decodeURIComponent(calls[0]!.url)).toBe("https://api.github.com/search/code?q=schema:name repo:acme/web&per_page=20");
+    });
+
+    it("refuses a term made only of qualifiers", async () => {
+      const { adapter: gh } = adapter([]);
+      await expect(gh.searchCode("acme/web", "repo:other/repo", "main")).rejects.toThrow(
+        "contains only GitHub search qualifiers",
+      );
+    });
+  });
+
+  describe("sanitizeCodeSearchTerm", () => {
+    it("strips known qualifiers anywhere in the term", () => {
+      expect(sanitizeCodeSearchTerm("lookup repo:evil/org language:go is:public")).toBe("lookup");
+      expect(sanitizeCodeSearchTerm("path:secret token org:evil")).toBe("token");
+    });
+
+    it("leaves a single plain term alone", () => {
+      expect(sanitizeCodeSearchTerm("read_file")).toBe("read_file");
+    });
+
+    it("throws when only qualifiers remain", () => {
+      expect(() => sanitizeCodeSearchTerm("repo:a/b org:c")).toThrow(ForgeError);
     });
   });
 });
