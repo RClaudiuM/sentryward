@@ -10,6 +10,11 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- A review whose worker stalled past the lock timeout, and was retried by
+  another worker, can no longer finish or fail the retry when it wakes up.
+  Finishing and failing a job now apply only to the attempt that holds it, so
+  the retry's result and findings are stored instead of being dropped.
+  Closes #185.
 - A pull or merge request that is closed and then reopened without a new push
   is reviewed again. The review cancelled by the close no longer counts as one
   already done for that head, so the reopen webhook queues it instead of

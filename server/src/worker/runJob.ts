@@ -209,7 +209,7 @@ async function runClaimedJob(job: ReviewJob, deps: RunJobDeps, progress: Progres
   // leave such a job queued until the repository came back on.
   if (!repo.enabled) {
     const error = repo.accessLostAt ? ACCESS_LOST_REASON : DISABLED_REASON;
-    await complete(job.id, { status: "skipped", verdict: null, error });
+    await complete(job.id, job.attempts, { status: "skipped", verdict: null, error });
     return;
   }
   // Queued before the forge refused the credentials. Dashboard reviews and
@@ -217,7 +217,7 @@ async function runClaimedJob(job: ReviewJob, deps: RunJobDeps, progress: Progres
   // `/sentryward review` comments arrive through the paused repository hook
   // and are dropped there.
   if (repo.connection.credentialsRejectedAt && job.trigger === "webhook") {
-    await complete(job.id, { status: "skipped", verdict: null, error: CREDENTIALS_REJECTED_REASON });
+    await complete(job.id, job.attempts, { status: "skipped", verdict: null, error: CREDENTIALS_REJECTED_REASON });
     return;
   }
 
@@ -270,7 +270,7 @@ async function runClaimedJob(job: ReviewJob, deps: RunJobDeps, progress: Progres
   }
   const skip = skipReason(job, config, changeSet);
   if (skip) {
-    await complete(job.id, {
+    await complete(job.id, job.attempts, {
       status: "skipped",
       verdict: null,
       resolvedConfig: { config, sources: loaded.sources, repoFile: loaded.repoFile },
@@ -355,9 +355,9 @@ async function runClaimedJob(job: ReviewJob, deps: RunJobDeps, progress: Progres
   const cancel = async (posted: boolean) => {
     watch.stop();
     // The job belongs to whoever holds it now: the worker that failed it, or
-    // another run that claimed it again. complete() only checks the status, so
-    // writing here could finish that run's job, and a status could overwrite
-    // its pending one.
+    // another run that claimed it again. complete() is scoped to this attempt,
+    // but a comment or commit status posted here would still overwrite that
+    // run's own.
     if (cancelledBy === "lost") return;
     const reason =
       cancelledBy === "closed" ? CLOSED_REASON : cancelledBy === "disabled" ? DISABLED_REASON : "Review cancelled";
@@ -380,7 +380,7 @@ async function runClaimedJob(job: ReviewJob, deps: RunJobDeps, progress: Progres
     }
     // A manual or turn-off cancel already stored its reason and status, so
     // this only finishes a job the change being closed stopped.
-    await complete(job.id, {
+    await complete(job.id, job.attempts, {
       status: "cancelled",
       verdict: null,
       resolvedConfig,
@@ -586,7 +586,7 @@ async function runClaimedJob(job: ReviewJob, deps: RunJobDeps, progress: Progres
   // stands, and the job says what did not reach the forge.
   const errors = [...result.errors, ...(publication?.errors ?? [])];
   const status = result.status === "completed" && publication?.errors.length ? "partial" : result.status;
-  const stored = await complete(job.id, {
+  const stored = await complete(job.id, job.attempts, {
     status,
     verdict: result.verdict.verdict,
     result,
