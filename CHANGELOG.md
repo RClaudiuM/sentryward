@@ -10,6 +10,13 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- Renewing a GitLab OAuth connection's access can no longer lose the tokens
+  GitLab issued. If the refresh transaction timed out or failed to commit after
+  GitLab answered, the new tokens were rolled back while the old refresh token
+  was already spent, and the connection needed a manual reconnect. The token
+  request is now capped to the time the transaction has left, and tokens from a
+  refresh whose transaction fails are still stored, unless the connection was
+  updated in the meantime (#187).
 - A review whose worker stalled past the lock timeout, and was retried by
   another worker, can no longer finish or fail the retry when it wakes up.
   Finishing and failing a job now apply only to the attempt that holds it, so

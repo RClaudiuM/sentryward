@@ -21,6 +21,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -921,6 +922,55 @@ describe("GitLab OAuth", () => {
 
       expect(tokens).toEqual(["new-access", "new-access"]);
       expect(calls.filter((call) => TOKEN_URL.test(call.url))).toHaveLength(1);
+    });
+
+    // A transaction that expires while GitLab is answering, so the refresh
+    // succeeds but its update cannot commit.
+    const expireTransactionDuringRefresh = (beforeAnswer: () => Promise<unknown> = async () => {}) => {
+      const transaction = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>;
+      vi.spyOn(prisma, "$transaction").mockImplementation(((fn: unknown, options?: object) =>
+        transaction(fn, { ...options, timeout: 200 })) as never);
+      const stub = fetchStub([tokenRoute("new-access", "new-refresh")]);
+      vi.stubGlobal("fetch", async (...args: Parameters<typeof stub.fetch>) => {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await beforeAnswer();
+        return stub.fetch(...args);
+      });
+    };
+
+    it("keeps the rotated tokens when the transaction fails after GitLab answered", async () => {
+      const connection = await oauthConnection(new Date(Date.now() - 1000));
+      expireTransactionDuringRefresh();
+
+      expect(await gitlabAccessToken(connection.id)).toBe("new-access");
+      const stored = await prisma.forgeConnection.findUniqueOrThrow({ where: { id: connection.id } });
+      expect(decrypt(stored.encryptedToken!)).toBe("new-access");
+      expect(decrypt(stored.encryptedRefreshToken!)).toBe("new-refresh");
+    });
+
+    it("does not overwrite tokens stored by someone else while the failed refresh ran", async () => {
+      const connection = await oauthConnection(new Date(Date.now() - 1000));
+      expireTransactionDuringRefresh(() =>
+        prisma.forgeConnection.update({
+          where: { id: connection.id },
+          data: { encryptedToken: encrypt("reconnected-access"), encryptedRefreshToken: encrypt("reconnected-refresh") },
+        }),
+      );
+
+      expect(await gitlabAccessToken(connection.id)).toBe("new-access");
+      const stored = await prisma.forgeConnection.findUniqueOrThrow({ where: { id: connection.id } });
+      expect(decrypt(stored.encryptedToken!)).toBe("reconnected-access");
+      expect(decrypt(stored.encryptedRefreshToken!)).toBe("reconnected-refresh");
+    });
+
+    it("still returns the rotated access token when saving it after a failed transaction errors", async () => {
+      const connection = await oauthConnection(new Date(Date.now() - 1000));
+      expireTransactionDuringRefresh();
+      vi.spyOn(prisma.forgeConnection, "updateMany").mockRejectedValue(new Error("connection lost"));
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      expect(await gitlabAccessToken(connection.id)).toBe("new-access");
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("will need reconnecting"), expect.any(Error));
     });
 
     it("asks to reconnect when GitLab refuses the refresh", async () => {
