@@ -1,16 +1,24 @@
-const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
-  ["day", 86_400_000],
-  ["hour", 3_600_000],
-  ["minute", 60_000],
+const UNITS: [Intl.RelativeTimeFormatUnit, number, number][] = [
+  ["minute", 60_000, 60],
+  ["hour", 3_600_000, 24],
+  ["day", 86_400_000, Infinity],
 ]
 
 const format = new Intl.RelativeTimeFormat("en", { numeric: "auto" })
 
 export function timeAgo(iso: string, now = Date.now()) {
   const diff = new Date(iso).getTime() - now
-  for (const [unit, ms] of UNITS) {
-    if (Math.abs(diff) >= ms) return format.format(Math.round(diff / ms), unit)
+  // An unparseable timestamp yields NaN; keep the old "just now" fallback.
+  if (Number.isNaN(diff)) return "just now"
+  const abs = Math.abs(diff)
+  if (abs < 60_000) return "just now"
+
+  const sign = Math.sign(diff)
+  for (const [unit, ms, max] of UNITS) {
+    const value = Math.round(abs / ms)
+    if (value < max) return format.format(sign * value, unit)
   }
+  // Unreachable: "day" has no cap.
   return "just now"
 }
 
