@@ -1,6 +1,20 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { timeAgo } from "./time"
+import { localDateStamp, timeAgo } from "./time"
+
+describe("localDateStamp", () => {
+  afterEach(() => vi.useRealTimers())
+
+  it.each([0, 23])("keeps the local calendar date at hour %i", (hour) => {
+    expect(localDateStamp(new Date(2026, 0, 2, hour, 30))).toBe("2026-01-02")
+  })
+
+  it("defaults to the current local date", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 11, 31, 23, 30))
+    expect(localDateStamp()).toBe("2026-12-31")
+  })
+})
 
 describe("timeAgo", () => {
   const now = Date.parse("2026-11-01T12:00:00Z")

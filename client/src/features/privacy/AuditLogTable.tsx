@@ -25,7 +25,7 @@ import { useDebounced } from "@/hooks/use-debounced"
 import { usePagination } from "@/hooks/use-pagination"
 import { downloadFile } from "@/lib/download"
 import { ALL, selectedLabel } from "@/lib/filters"
-import { timeAgo } from "@/lib/time"
+import { localDateStamp, timeAgo } from "@/lib/time"
 import {
   fetchAuditExport,
   PROVIDER_OPTIONS,
@@ -92,7 +92,7 @@ export function AuditLogTable({ scope }: { scope: AuditScope }) {
 
   async function exportAs(format: "csv" | "json") {
     setExporting(true)
-    const stamp = new Date().toISOString().slice(0, 10)
+    const stamp = localDateStamp()
     await downloadFile(
       fetchAuditExport(scope, filters, format),
       `sentryward-audit-${stamp}.${format}`,

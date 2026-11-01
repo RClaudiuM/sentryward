@@ -62,6 +62,8 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- Audit log export filenames use the viewer's local date instead of UTC (#214).
+
 - `timeAgo` rounds values that reach a full unit up to that unit instead of
   showing "60 minutes ago" or "24 hours ago", and past and future times now
   round halfway values the same way (90 seconds ago reads "2 minutes ago")
