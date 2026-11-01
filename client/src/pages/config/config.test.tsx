@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { App } from "@/App"
@@ -241,7 +241,7 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     ])
 
     await openTab("LLM Config")
-    for (const name of ["Connection", "Models", "Model calls"]) {
+    for (const name of ["Connection and models", "Per-purpose models", "Model calls"]) {
       expect(screen.getByRole("group", { name })).toBeInTheDocument()
     }
     await openTab("Finding Types")
@@ -1242,10 +1242,22 @@ describe("LLM tab", { timeout: 20_000 }, () => {
       const rows = screen.getAllByLabelText(/^Fallback model \d$/)
       await userEvent.type(rows.at(-1)!, model)
     }
-    expect(screen.getByRole("button", { name: "Move fallback model 1 up" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Move fallback model 2 down" })).toBeDisabled()
+    expect(screen.queryByRole("button", { name: /^Move fallback model/ })).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole("button", { name: "Move fallback model 2 up" }))
+    // jsdom lays nothing out, so stack each row by its place in the list; the
+    // keyboard sensor moves toward the nearest box.
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const item = this.closest("li")
+      const index = item ? Array.from(item.parentElement!.children).indexOf(item) : -1
+      const top = index < 0 ? 0 : index * 50
+      return { x: 0, y: top, left: 0, top, right: 400, bottom: top + 40, width: 400, height: 40, toJSON() {} } as DOMRect
+    })
+    screen.getByRole("button", { name: "Reorder fallback model 2" }).focus()
+    await userEvent.keyboard(" ")
+    await userEvent.keyboard("{ArrowUp}")
+    await userEvent.keyboard(" ")
+    layout.mockRestore()
+
     expect(screen.getByLabelText("Fallback model 1")).toHaveValue("openai/gpt-5-mini")
     await userEvent.click(screen.getByRole("button", { name: "Save global config" }))
     await waitFor(() =>
@@ -1383,6 +1395,10 @@ describe("LLM tab", { timeout: 20_000 }, () => {
     const { unmount } = renderWithProviders(<App />, { route: "/configuration?tab=files" })
 
     expect(await screen.findByRole("combobox", { name: "Profile" })).toBeInTheDocument()
+    // Both apply to every tab, so they share the card above the tabs.
+    const scopeCard = screen.getByRole("region", { name: "Scope and profile" })
+    expect(within(scopeCard).getByRole("combobox", { name: "Scope" })).toBeInTheDocument()
+    expect(within(scopeCard).getByRole("combobox", { name: "Profile" })).toBeInTheDocument()
     await openTab("LLM Config")
     expect(screen.queryByRole("combobox", { name: "Tool support" })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole("button", { name: "Advanced" }))
@@ -1401,5 +1417,45 @@ describe("LLM tab", { timeout: 20_000 }, () => {
     await userEvent.click(toolSupport)
     await userEvent.click(screen.getByRole("option", { name: "Auto (detected)" }))
     expect(screen.getByRole("combobox", { name: "Tool support" })).toHaveTextContent("Auto (detected)")
+  })
+
+  it("lays the tabs out as a side rail and summarizes what will run, following unsaved edits", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration" })
+
+    expect(await screen.findByRole("tablist")).toHaveAttribute("aria-orientation", "vertical")
+    const summary = await screen.findByRole("region", { name: "What will run" })
+    expect(summary).toHaveTextContent("None selected")
+    expect(summary).toHaveTextContent("anthropic/claude-sonnet-5-5")
+    // 200,000 less 8,000 max output tokens.
+    await waitFor(() => expect(summary).toHaveTextContent("192,000 tokens (auto)"))
+    expect(within(summary).queryByRole("list", { name: "Fallback order" })).not.toBeInTheDocument()
+
+    await selectOpenAiConnection()
+    await userEvent.type(screen.getByLabelText("Model"), "openai/gpt-5")
+    await userEvent.click(screen.getByRole("button", { name: "Add fallback model" }))
+    await userEvent.type(screen.getByLabelText("Fallback model 1"), "openai/gpt-5-mini")
+
+    expect(summary).toHaveTextContent("OpenAI")
+    expect(summary).toHaveTextContent("openai/gpt-5")
+    expect(within(summary).getByRole("list", { name: "Fallback order" })).toHaveTextContent("openai/gpt-5-mini")
+    expect(within(summary).getByRole("button", { name: "Test model" })).toBeEnabled()
+  })
+
+  it("greys out the temperature while thinking is on", async () => {
+    mockApi(globalRoutes())
+    renderWithProviders(<App />, { route: "/configuration" })
+
+    const temperature = await screen.findByLabelText("Temperature")
+    expect(temperature).toBeEnabled()
+
+    await userEvent.click(screen.getByRole("combobox", { name: "Thinking" }))
+    await userEvent.click(screen.getByRole("option", { name: "High (24k tokens)" }))
+    expect(screen.getByLabelText("Temperature")).toBeDisabled()
+    expect(screen.getByText("Thinking is on, so the temperature is not sent.")).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("combobox", { name: "Thinking" }))
+    await userEvent.click(screen.getByRole("option", { name: "Off" }))
+    expect(screen.getByLabelText("Temperature")).toBeEnabled()
   })
 })

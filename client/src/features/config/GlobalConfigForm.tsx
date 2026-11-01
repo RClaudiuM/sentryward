@@ -27,6 +27,7 @@ export function GlobalConfigForm(props: {
   global: GlobalConfig
   tab: ConfigTab
   onTabChange: (tab: ConfigTab) => void
+  profileSlot?: HTMLElement | null
 }) {
   const { global } = props
   const save = useSaveGlobalConfig()
@@ -80,6 +81,7 @@ export function GlobalConfigForm(props: {
         onChange={setForm}
         tab={props.tab}
         onTabChange={props.onTabChange}
+        profileSlot={props.profileSlot}
         config={global.config}
         sources={global.sources}
         inherited={inherited}

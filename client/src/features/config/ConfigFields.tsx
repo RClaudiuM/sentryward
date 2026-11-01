@@ -1,6 +1,24 @@
 import { useState, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import { Link } from "react-router"
-import { ArrowDown, ArrowUp, ChevronRight, Loader2, Plus, RotateCcw, Trash2 } from "lucide-react"
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
+import { ChevronRight, Plus, RotateCcw, Trash2 } from "lucide-react"
 import { SearchableSelect } from "@/components/SearchableSelect"
 import { TagInput } from "@/components/TagInput"
 import { Badge } from "@/components/ui/badge"
@@ -25,21 +43,19 @@ import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { DragHandle } from "@/features/forge/SortableGrid"
+import { cn } from "@/lib/utils"
 import {
   STATUS_LABELS,
   useApiKeyStatuses,
   useApiKeys,
   useLlmCapabilities,
   useLlmModels,
-  useTestLlmModel,
   type ApiKey,
   type LlmConnectionStatus,
-  type ModelCapability,
-  type ModelTestResult,
 } from "@/features/llm-connections/api"
 import { isCheckable, needsAttention } from "@/features/llm-connections/health"
 import { LLM_PROVIDERS } from "@/features/llm-connections/providers"
-import { useModelPriceLookup, type ModelPrice } from "@/features/model-prices/api"
 import {
   useConfigSchema,
   type ConfigOverride,
@@ -49,6 +65,7 @@ import {
   type Rule,
   type ThinkingLevel,
 } from "./api"
+import { LlmRunSummary } from "./LlmRunSummary"
 import { ModelCombobox, type ModelSuggestions } from "./ModelCombobox"
 import { ReviewPreview } from "./ReviewPreview"
 import { CONFIG_TABS, TAB_ERRORS, type ConfigTab } from "./tabs"
@@ -866,14 +883,10 @@ function RulesField(props: {
   )
 }
 
-// A copy of rows with two entries exchanged; toSettings keeps array order.
-function swap<T>(rows: T[], a: number, b: number) {
-  const next = [...rows]
-  const moved = next[a]!
-  next[a] = next[b]!
-  next[b] = moved
-  return next
-}
+// Rows are plain strings (blank or repeated while typing), so each gets an id
+// that follows it through drags; the index would make dnd-kit swap the wrong rows.
+let nextFallbackId = 0
+const fallbackId = () => `fallback-${nextFallbackId++}`
 
 function FallbackModelsField(props: {
   rows: string[]
@@ -886,58 +899,64 @@ function FallbackModelsField(props: {
   warning?: ReactNode
 }) {
   const { rows } = props
+  const [ids, setIds] = useState(() => rows.map(fallbackId))
+  // The form was loaded or reset underneath us: start the ids over.
+  if (ids.length !== rows.length) setIds(rows.map(fallbackId))
+
+  const sensors = useSensors(
+    // A few pixels of travel before a drag starts, so clicking the handle stays a click.
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
+  function onDragEnd({ active, over }: DragEndEvent) {
+    if (!over || active.id === over.id) return
+    const from = ids.indexOf(String(active.id))
+    const to = ids.indexOf(String(over.id))
+    setIds(arrayMove(ids, from, to))
+    props.onChange(arrayMove(rows, from, to))
+  }
+
+  function add() {
+    setIds([...ids, fallbackId()])
+    props.onChange([...rows, ""])
+  }
+
+  function remove(index: number) {
+    setIds(ids.filter((_, i) => i !== index))
+    props.onChange(rows.filter((_, i) => i !== index))
+  }
+
   return (
     <FieldSet data-disabled={props.disabled} data-invalid={props.error ? true : undefined}>
       <FieldLegend variant="label">Fallback models</FieldLegend>
-      {rows.map((model, index) => (
-        <div key={index} className="flex items-center gap-2">
-          <ModelCombobox
-            aria-label={`Fallback model ${index + 1}`}
-            value={model}
-            onChange={(value) => props.onChange(rows.map((row, i) => (i === index ? value : row)))}
-            placeholder="openai/gpt-5"
-            disabled={props.disabled}
-            aria-invalid={props.error ? true : undefined}
-            suggestions={props.suggestions}
-          />
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Move fallback model ${index + 1} up`}
-            onClick={() => props.onChange(swap(rows, index, index - 1))}
-            disabled={props.disabled || index === 0}
-          >
-            <ArrowUp />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Move fallback model ${index + 1} down`}
-            onClick={() => props.onChange(swap(rows, index, index + 1))}
-            disabled={props.disabled || index === rows.length - 1}
-          >
-            <ArrowDown />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Remove fallback model ${index + 1}`}
-            onClick={() => props.onChange(rows.filter((_, i) => i !== index))}
-            disabled={props.disabled}
-          >
-            <Trash2 />
-          </Button>
-        </div>
-      ))}
+      {rows.length > 0 && (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+            <ol aria-label="Fallback model order" className="flex flex-col gap-2">
+              {rows.map((model, index) => (
+                <SortableFallbackRow
+                  key={ids[index] ?? index}
+                  id={ids[index] ?? String(index)}
+                  index={index}
+                  model={model}
+                  onChange={(value) => props.onChange(rows.map((row, i) => (i === index ? value : row)))}
+                  onRemove={() => remove(index)}
+                  disabled={props.disabled}
+                  invalid={Boolean(props.error)}
+                  suggestions={props.suggestions}
+                />
+              ))}
+            </ol>
+          </SortableContext>
+        </DndContext>
+      )}
       <div>
         <Button
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => props.onChange([...rows, ""])}
+          onClick={add}
           disabled={props.disabled || rows.length >= MAX_FALLBACK_MODELS}
         >
           <Plus />
@@ -945,12 +964,65 @@ function FallbackModelsField(props: {
         </Button>
       </div>
       <FieldDescription>
-        Tried in order when the model fails, up to {MAX_FALLBACK_MODELS}. {props.emptyHint}
+        Tried in order when the model fails, up to {MAX_FALLBACK_MODELS}. Drag to reorder. {props.emptyHint}
       </FieldDescription>
       {props.effective && <FieldDescription className="text-xs">{props.effective}</FieldDescription>}
       {props.warning}
       {props.error && <FieldError>{props.error}</FieldError>}
     </FieldSet>
+  )
+}
+
+function SortableFallbackRow(props: {
+  id: string
+  index: number
+  model: string
+  onChange: (value: string) => void
+  onRemove: () => void
+  disabled?: boolean
+  invalid: boolean
+  suggestions?: ModelSuggestions
+}) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
+    id: props.id,
+    disabled: props.disabled,
+  })
+  const n = props.index + 1
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={cn("flex items-center gap-2", isDragging && "relative z-10 opacity-80")}
+    >
+      {!props.disabled && (
+        <DragHandle
+          label={`Reorder fallback model ${n}`}
+          handleRef={setActivatorNodeRef}
+          attributes={attributes}
+          listeners={listeners}
+        />
+      )}
+      <ModelCombobox
+        aria-label={`Fallback model ${n}`}
+        value={props.model}
+        onChange={props.onChange}
+        placeholder="openai/gpt-5"
+        disabled={props.disabled}
+        aria-invalid={props.invalid ? true : undefined}
+        suggestions={props.suggestions}
+      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        aria-label={`Remove fallback model ${n}`}
+        onClick={props.onRemove}
+        disabled={props.disabled}
+      >
+        <Trash2 />
+      </Button>
+    </li>
   )
 }
 
@@ -1066,101 +1138,6 @@ function OffHint(props: { setting: string; tab: ConfigTab; onTabChange: (tab: Co
   )
 }
 
-const THINKING_SUPPORT_LABEL: Record<string, string> = {
-  options: "thinking options",
-  model: "the model thinks by itself",
-  none: "no thinking",
-}
-
-// What probes and reviews found the model that will run supports, so an
-// override is only set when that is wrong.
-function DetectedCapabilities(props: { model: string; capability: ModelCapability | undefined; loading: boolean }) {
-  if (!props.model) return null
-  const { capability } = props
-  let text: ReactNode
-  if (props.loading) text = "Checking what was detected..."
-  else if (!capability || (capability.thinking === null && capability.tools === null)) text = "Not detected yet. Test the model to detect it."
-  else {
-    const thinking = capability.thinking === null ? "thinking unknown" : THINKING_SUPPORT_LABEL[capability.thinking]
-    const tools = capability.tools === null ? "tools unknown" : capability.tools ? "tools work" : "no tools"
-    text = `${thinking}, ${tools}.`
-  }
-  return (
-    <p className="text-sm text-muted-foreground" data-testid="detected-capabilities">
-      Detected for <code>{props.model}</code>: {text}
-    </p>
-  )
-}
-
-const TEST_FAILURE: Record<Extract<ModelTestResult, { ok: false }>["reason"], string> = {
-  revoked: "the key was rejected",
-  model: "the connection cannot run this model",
-  unreachable: "the connection could not be reached",
-  output: "the reply was not usable",
-}
-
-// Runs one call against the connection that will run the review, without saving.
-function ModelTest(props: { provider: LlmProviderName | null; model: string; disabled?: boolean }) {
-  // The caller keys this by provider and model, so a result never outlives what was tested.
-  const test = useTestLlmModel()
-  const target = props.provider && props.model
-  const result = test.data?.result
-  return (
-    <div className="flex flex-col gap-1">
-      <div>
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          onClick={() => props.provider && test.mutate({ provider: props.provider, model: props.model })}
-          disabled={props.disabled || !target || test.isPending}
-          title={props.provider ? undefined : "Select an LLM connection to test the model"}
-        >
-          {test.isPending && <Loader2 className="animate-spin" />}
-          Test model
-        </Button>
-      </div>
-      <div role="status" className="text-xs">
-        {result?.ok && (
-          <span className="text-muted-foreground">
-            Works: answered in {result.latencyMs.toLocaleString()} ms.
-          </span>
-        )}
-        {result && !result.ok && (
-          <span className="text-destructive">
-            Failed, {TEST_FAILURE[result.reason]}: {result.message}
-          </span>
-        )}
-        {test.isError && <span className="text-destructive">{test.error.message}</span>}
-      </div>
-    </div>
-  )
-}
-
-const usd = (value: number) => `$${value.toFixed(2)}`
-
-// What the effective model costs, or where to set a price when none is known.
-function ModelPriceHint(props: { model: string }) {
-  const lookup = useModelPriceLookup(props.model)
-  if (!props.model || lookup.isPending || lookup.isError) return null
-  const price: ModelPrice | null = lookup.data.price
-  return (
-    <FieldDescription className="text-xs">
-      {price ? (
-        `${usd(price.input)} input / ${usd(price.output)} output per million tokens.`
-      ) : (
-        <>
-          No price set for this model.{" "}
-          <Link className="underline underline-offset-4" to="/llm-connections">
-            Set model prices
-          </Link>
-          .
-        </>
-      )}
-    </FieldDescription>
-  )
-}
-
 // What "auto" resolves to, the same way as promptCeiling on the server.
 function autoContextBudget(
   schema: ConfigSchema | undefined,
@@ -1186,6 +1163,10 @@ export function ConfigFields(props: {
   onChange: (form: FormState) => void
   tab: ConfigTab
   onTabChange: (tab: ConfigTab) => void
+  // Where the page's scope card wants the Profile field: both apply to every
+  // tab, but the profile's form state lives here, so it is portalled into the
+  // card. null while the slot mounts; undefined renders it above the tabs.
+  profileSlot?: HTMLElement | null
   // Shown between the tab list and the open tab, e.g. warnings for the scope.
   notices?: ReactNode
   // The save bar, at the bottom of every tab.
@@ -1400,7 +1381,8 @@ export function ConfigFields(props: {
     )
   }
 
-  function numberField(name: NumberName, extra?: ReactNode) {
+  // `off` greys out a value the model call ignores right now, e.g. temperature while thinking.
+  function numberField(name: NumberName, extra?: ReactNode, off = false) {
     const spec = NUMBERS.find((number) => number.name === name)!
     const path = `${spec.section}.${name}`
     const fallback = inherited ? (at(inherited, path) as number | null) : undefined
@@ -1423,7 +1405,7 @@ export function ConfigFields(props: {
         effective={config && effective(path, at(config, path))}
         extra={extra}
         error={errors[name]}
-        disabled={locked(path)}
+        disabled={locked(path) || off}
       />
     )
   }
@@ -1549,10 +1531,27 @@ export function ConfigFields(props: {
   const severities = (schema.data?.severities ?? []).map((s) => ({ value: s, label: s }))
   const profiles = Object.keys(schema.data?.profiles ?? {}).map((p) => ({ value: p, label: p }))
 
+  // The fallbacks a review would try: the repository file's, the ones typed
+  // here, or the inherited ones when none are.
+  const typedFallbacks = form.fallbackModels.map((model) => model.trim()).filter(Boolean)
+  const effectiveFallbacks =
+    (locked("llm.fallbackModels")
+      ? config?.llm.fallbackModels
+      : typedFallbacks.length
+        ? typedFallbacks
+        : inherited?.llm.fallbackModels) ?? []
+  // The server drops temperature while thinking is on, unless the model cannot
+  // think. An invalid value stays editable so the error can be fixed.
+  const thinkingOn = effectiveThinking !== undefined && effectiveThinking !== "off" && detected?.thinking !== "none"
+  const temperatureOff = thinkingOn && !errors.temperature
+
   const panels: Record<ConfigTab, ReactNode> = {
     llm: (
       <>
-        <Section title="Connection" description="Which saved connection runs the review.">
+        <Section
+          title="Connection and models"
+          description="Which saved connection runs the review, the model it runs, the ones tried when it fails, and optional models for the walkthrough and verification."
+        >
           <div className="grid gap-4 @md/field-group:grid-cols-2">
             <div className="flex flex-col gap-2">
               <ChoiceField
@@ -1597,14 +1596,7 @@ export function ConfigFields(props: {
                 </p>
               )}
             </div>
-          </div>
-        </Section>
-        <FieldSeparator />
-        <Section
-          title="Models"
-          description="The model that reviews the change, the ones tried when it fails, and optional models for the walkthrough and verification."
-        >
-          <div className="grid gap-4 @md/field-group:grid-cols-2">
+            {/* Price, detected capabilities and the test live in the "What will run" panel. */}
             <Field data-disabled={locked("llm.model")}>
               <FieldLabel htmlFor="model">Model</FieldLabel>
               <ModelCombobox
@@ -1620,47 +1612,52 @@ export function ConfigFields(props: {
                 The model that reviews the change, as provider/model.{" "}
                 {emptyHint("llm.model", inherited?.llm.model)}
               </FieldDescription>
-              <ModelPriceHint model={effectiveModel} />
               {config && effectiveLine("llm.model", config.llm.model)}
-              <ModelTest
-                key={`${modelsProvider}:${effectiveModel}`}
-                provider={modelsProvider}
-                model={effectiveModel}
-              />
               {!disabled && !runsOn(form.model) && mismatchHint}
               {errors.model && <FieldError>{errors.model}</FieldError>}
             </Field>
-            <FallbackModelsField
-              rows={form.fallbackModels}
-              onChange={(fallbackModels) => props.onChange({ ...form, fallbackModels })}
-              emptyHint={emptyHint("llm.fallbackModels", inherited?.llm.fallbackModels)}
-              effective={config && effective("llm.fallbackModels", config.llm.fallbackModels)}
-              error={errors.fallbackModels}
-              disabled={locked("llm.fallbackModels")}
-              suggestions={modelSuggestions}
-              warning={!disabled && !form.fallbackModels.every(runsOn) ? mismatchHint : undefined}
-            />
-            {purposeModelField(
-              "walkthroughModel",
-              "Walkthrough model",
-              walkthroughKnownOff ? { setting: "Walkthrough", tab: "display" } : undefined,
-            )}
-            {purposeModelField(
-              "verifyModel",
-              "Verification model",
-              verifyOn ? undefined : { setting: "Verify findings", tab: "findings" },
-            )}
           </div>
+          <FallbackModelsField
+            rows={form.fallbackModels}
+            onChange={(fallbackModels) => props.onChange({ ...form, fallbackModels })}
+            emptyHint={emptyHint("llm.fallbackModels", inherited?.llm.fallbackModels)}
+            effective={config && effective("llm.fallbackModels", config.llm.fallbackModels)}
+            error={errors.fallbackModels}
+            disabled={locked("llm.fallbackModels")}
+            suggestions={modelSuggestions}
+            warning={!disabled && !form.fallbackModels.every(runsOn) ? mismatchHint : undefined}
+          />
+          {/* Always visible: collapsing them could hide an override. */}
+          <FieldSet>
+            <FieldLegend variant="label">Per-purpose models</FieldLegend>
+            <div className="grid gap-4 @md/field-group:grid-cols-2">
+              {purposeModelField(
+                "walkthroughModel",
+                "Walkthrough model",
+                walkthroughKnownOff ? { setting: "Walkthrough", tab: "display" } : undefined,
+              )}
+              {purposeModelField(
+                "verifyModel",
+                "Verification model",
+                verifyOn ? undefined : { setting: "Verify findings", tab: "findings" },
+              )}
+            </div>
+          </FieldSet>
         </Section>
         <FieldSeparator />
         <Section title="Model calls" description="How each request to the model is made.">
-          <div className="grid gap-4 @md/field-group:grid-cols-3">
-            {numberField("temperature")}
-            {numberField("maxTokens")}
-            {numberField("contextBudget", budgetHint)}
-          </div>
+          {/* Thinking sits beside max output tokens because its budget is added on top. */}
           <div className="grid gap-4 @md/field-group:grid-cols-2">
             {choiceField("thinking")}
+            {numberField("maxTokens")}
+            {numberField(
+              "temperature",
+              temperatureOff && (
+                <FieldDescription className="text-xs">Thinking is on, so the temperature is not sent.</FieldDescription>
+              ),
+              temperatureOff,
+            )}
+            {numberField("contextBudget", budgetHint)}
             {choiceField(
               "verifyThinking",
               !verifyOn,
@@ -1671,13 +1668,8 @@ export function ConfigFields(props: {
         <FieldSeparator />
         <Section
           title="Connection capabilities"
-          description="Detected per model by a probe when a model is tested or first used, and corrected by reviews. Set these only when detection is wrong."
+          description="Detected per model by a probe when a model is tested or first used, and corrected by reviews (shown under What will run). Set these only when detection is wrong."
         >
-          <DetectedCapabilities
-            model={modelsProvider ? effectiveModel : ""}
-            capability={detected}
-            loading={capabilities.isPending && Boolean(modelsProvider)}
-          />
           {/* Kept open while an override is set, so it is never hidden. */}
           <Collapsible open={advancedOpen || capabilityOverride} onOpenChange={setAdvancedOpen}>
             <CollapsibleTrigger asChild>
@@ -1910,24 +1902,73 @@ export function ConfigFields(props: {
     ),
   }
 
+  // A sticky panel beside the settings of a tab, where it has one.
+  const asides: Partial<Record<ConfigTab, { node: ReactNode; grid: string }>> = {
+    display: {
+      grid: "@5xl:grid-cols-2",
+      node: (
+        <Card role="region" aria-label="Review preview" className="@5xl:sticky @5xl:top-18">
+          <CardHeader>
+            <CardTitle>Preview</CardTitle>
+            <CardDescription>
+              What Sentryward would post on a sample change with these settings, including unsaved edits.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReviewPreview request={previewRequest} />
+          </CardContent>
+        </Card>
+      ),
+    },
+    llm: {
+      grid: "@6xl:grid-cols-[minmax(0,1fr)_22rem]",
+      node: (
+        <LlmRunSummary
+          provider={modelsProvider}
+          attention={runningAttention || undefined}
+          model={effectiveModel}
+          fallbacks={effectiveFallbacks}
+          thinkingLabel={
+            effectiveThinking && THINKING_OPTIONS.find((option) => option.value === effectiveThinking)?.label
+          }
+          autoBudget={autoBudget}
+          typedBudget={budgetValue !== undefined && Number.isFinite(budgetValue) ? budgetValue : undefined}
+          capability={detected}
+          capabilityLoading={capabilities.isPending && Boolean(modelsProvider)}
+        />
+      ),
+    },
+  }
+
+  // Above the tabs: a profile fills in values on every one of them.
+  const profileField = (
+    <ChoiceField
+      id="profile"
+      label="Profile"
+      value={form.profile}
+      onChange={setField("profile")}
+      options={profiles}
+      {...choice("profile", inherited?.profile)}
+      description="A preset that fills in values on every tab; anything set here wins over it."
+      effective={config && effective("profile", config.profile)}
+      disabled={locked("profile")}
+    />
+  )
+
   return (
     <div className="flex flex-col gap-4">
-      {/* Above the tabs: a profile fills in values on every one of them. */}
-      <div className="max-w-md">
-        <ChoiceField
-          id="profile"
-          label="Profile"
-          value={form.profile}
-          onChange={setField("profile")}
-          options={profiles}
-          {...choice("profile", inherited?.profile)}
-          description="A preset that fills in values on every tab; anything set here wins over it."
-          effective={config && effective("profile", config.profile)}
-          disabled={locked("profile")}
-        />
-      </div>
-      <Tabs value={props.tab} onValueChange={(value) => props.onTabChange(value as ConfigTab)}>
-        <TabsList>
+      {props.profileSlot === undefined ? (
+        <div className="max-w-xs">{profileField}</div>
+      ) : (
+        props.profileSlot && createPortal(profileField, props.profileSlot)
+      )}
+      {/* Vertical: a side rail once the page container is wide enough, a row below that. */}
+      <Tabs
+        orientation="vertical"
+        value={props.tab}
+        onValueChange={(value) => props.onTabChange(value as ConfigTab)}
+      >
+        <TabsList className="data-[orientation=vertical]:@3xl:sticky data-[orientation=vertical]:@3xl:top-18">
           {CONFIG_TABS.map((item) => {
             const invalid = TAB_ERRORS[item.value].some((key) => errors[key])
             return (
@@ -1944,43 +1985,36 @@ export function ConfigFields(props: {
             )
           })}
         </TabsList>
-        {props.notices}
-        {CONFIG_TABS.map((item) => {
-          const card = (
-            <Card>
-              <CardHeader>
-                <CardTitle>{item.label}</CardTitle>
-                <CardDescription>{item.description}</CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-6">
-                <FieldGroup className="gap-6">{panels[item.value]}</FieldGroup>
-                {props.footer}
-              </CardContent>
-            </Card>
-          )
-          return (
-            <TabsContent key={item.value} value={item.value}>
-              {item.value === "display" ? (
-                <div className="grid items-start gap-4 @3xl:grid-cols-2">
-                  {card}
-                  <Card role="region" aria-label="Review preview" className="@3xl:sticky @3xl:top-4">
-                    <CardHeader>
-                      <CardTitle>Preview</CardTitle>
-                      <CardDescription>
-                        What Sentryward would post on a sample change with these settings, including unsaved edits.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <ReviewPreview request={previewRequest} />
-                    </CardContent>
-                  </Card>
-                </div>
-              ) : (
-                card
-              )}
-            </TabsContent>
-          )
-        })}
+        <div className="flex min-w-0 flex-1 flex-col gap-4">
+          {props.notices}
+          {CONFIG_TABS.map((item) => {
+            // The active rail item already names the tab, so the card only says what it covers.
+            const card = (
+              <Card>
+                <CardHeader>
+                  <CardDescription>{item.description}</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-6">
+                  <FieldGroup className="gap-6">{panels[item.value]}</FieldGroup>
+                  {props.footer}
+                </CardContent>
+              </Card>
+            )
+            const aside = asides[item.value]
+            return (
+              <TabsContent key={item.value} value={item.value}>
+                {aside ? (
+                  <div className={cn("grid items-start gap-4", aside.grid)}>
+                    {card}
+                    {aside.node}
+                  </div>
+                ) : (
+                  card
+                )}
+              </TabsContent>
+            )
+          })}
+        </div>
       </Tabs>
     </div>
   )
