@@ -1,7 +1,7 @@
 import { env } from "../config/env.ts";
 import type { ForgeConnection, IgnoreReason, ReviewJob } from "../generated/prisma/client.ts";
 import { prisma } from "../lib/prisma.ts";
-import { skipFilterReason } from "../review/config/filters.ts";
+import { skipReason, walkthroughEnabled } from "../review/config/filters.ts";
 import { loadDashboardConfig, loadReviewConfig } from "../review/config/load.ts";
 import type { Config } from "../review/config/schema.ts";
 import type { ChangeSet, RejectedFinding, ToolAnnotation } from "../review/core/models.ts";
@@ -100,34 +100,9 @@ const defaultDeps: RunJobDeps = {
   cache: forgeCache,
 };
 
-// Decided here rather than in the webhook handler, because only now is the
-// full configuration known, including the repository file. A manual review is
-// never skipped; someone asked for it, and so did a permitted review command.
-export function skipReason(
-  job: { trigger: ReviewJob["trigger"]; event?: string | null; actor?: string | null },
-  config: Config,
-  change: Parameters<typeof skipFilterReason>[1] & { isDraft: boolean },
-): string | null {
-  const { triggers } = config;
-  if (job.trigger === "webhook") {
-    if (triggers.review === "manual") return "Automatic reviews are turned off for this repository";
-    if (change.isDraft && triggers.review !== "all") return "Draft changes are not reviewed automatically";
-    if (job.event === "push" && !triggers.reviewOnPush) return "New commits are not reviewed automatically";
-    return skipFilterReason(triggers, change, job.actor);
-  }
-  if (job.trigger === "comment" && !triggers.command) {
-    return "Review commands are turned off for this repository";
-  }
-  return null;
-}
-
-// Automatic reviews include the walkthrough only when the summary trigger
-// allows it; a requested review follows the walkthrough setting alone.
-export function walkthroughEnabled(trigger: ReviewJob["trigger"], config: Config, isDraft: boolean): boolean {
-  if (!config.output.walkthrough) return false;
-  if (trigger !== "webhook") return true;
-  return config.triggers.summary === "published" && !isDraft;
-}
+// Pure trigger decisions, kept with the skip filters so the API's trigger
+// check (POST /api/config/triggers/check) runs the same code as the worker.
+export { skipReason, walkthroughEnabled };
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

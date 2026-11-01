@@ -5,11 +5,17 @@ import { CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW } from "../review/context/budget
 import { CATEGORIES, SEVERITIES } from "../review/core/severity.ts";
 import { THINKING_BUDGETS } from "../review/llm/thinking.ts";
 import { PROFILES } from "../review/config/profiles.ts";
+import { skipReason, walkthroughEnabled, type ReviewTrigger } from "../review/config/filters.ts";
 import { repoSettingsRuleIssues } from "../review/config/load.ts";
 import { resolveConfig } from "../review/config/resolve.ts";
 import { DEFAULT_CONFIG, PROFILE_NAMES, RULE_PATTERN_ERROR, dashboardOverrideSchema, rulePatternCompiles } from "../review/config/schema.ts";
 import { previewPublication } from "../review/preview/preview.ts";
-import { checkRulePatternsSchema, configPreviewSchema, updateGlobalConfigSchema } from "../schemas/config.schema.ts";
+import {
+  checkRulePatternsSchema,
+  configPreviewSchema,
+  triggerCheckSchema,
+  updateGlobalConfigSchema,
+} from "../schemas/config.schema.ts";
 import { requireStoredLlmConnection } from "../services/llm.ts";
 
 // What the settings UI needs to render choices and show inherited values.
@@ -87,6 +93,28 @@ export async function previewConfig(req: Request, res: Response) {
   const { provider, base, settings } = configPreviewSchema.parse(req.body);
   const { config } = resolveConfig({ global: base, repoSettings: settings });
   res.json(await previewPublication(config, provider));
+}
+
+// What the worker would do with a sample change under unsaved trigger
+// settings, from the same skipReason it runs. The repository file is not part
+// of it, as with the preview.
+const CHECK_JOB: Record<"opened" | "push" | "command", { trigger: ReviewTrigger; event?: string }> = {
+  opened: { trigger: "webhook" },
+  push: { trigger: "webhook", event: "push" },
+  command: { trigger: "comment" },
+};
+
+export function checkTriggers(req: Request, res: Response) {
+  const { base, settings, event, change, actor } = triggerCheckSchema.parse(req.body);
+  const { config } = resolveConfig({ global: base, repoSettings: settings });
+  const job = CHECK_JOB[event];
+  const reason = skipReason({ ...job, actor }, config, change);
+  res.json({
+    reason,
+    // Only a push can review just its new commits.
+    fullReview: reason === null && (event !== "push" || config.triggers.fullReviewOnPush),
+    walkthrough: reason === null && walkthroughEnabled(job.trigger, config, change.isDraft),
+  });
 }
 
 // One answer per pattern, in order: null when it compiles, the same message a

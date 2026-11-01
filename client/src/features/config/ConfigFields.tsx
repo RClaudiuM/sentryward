@@ -70,6 +70,7 @@ import { ModelCombobox, type ModelSuggestions } from "./ModelCombobox"
 import { FindingsSummary } from "./FindingsSummary"
 import { ReviewPreview } from "./ReviewPreview"
 import { SeverityScale } from "./SeverityScale"
+import { TriggersSummary } from "./TriggersSummary"
 import { CONFIG_TABS, TAB_ERRORS, type ConfigTab } from "./tabs"
 import {
   AUTO,
@@ -79,6 +80,7 @@ import {
   EMPTY_RULE,
   FLAGS,
   INHERIT,
+  LISTS,
   MAX_FALLBACK_MODELS,
   MAX_RULE_PATTERN,
   NUMBERS,
@@ -269,7 +271,23 @@ const CHOICE_INFO: Record<
 > = {
   review: {
     label: "Code review trigger",
-    description: "Which pull and merge requests are reviewed automatically when opened or marked ready.",
+    // One line per option, so what happens to drafts is spelled out.
+    description: (
+      <span className="flex flex-col gap-0.5">
+        <span>Which pull and merge requests are reviewed automatically when opened or marked ready.</span>
+        <span>
+          <strong className="font-medium text-foreground">Manual only</strong>: only{" "}
+          <code>/sentryward review</code> and reviews requested here.
+        </span>
+        <span>
+          <strong className="font-medium text-foreground">Published PRs</strong>: drafts wait until they are marked
+          ready.
+        </span>
+        <span>
+          <strong className="font-medium text-foreground">Draft and published PRs</strong>: drafts are reviewed too.
+        </span>
+      </span>
+    ),
     options: [
       { value: "manual", label: "Manual only" },
       { value: "published", label: "Published PRs" },
@@ -359,31 +377,41 @@ const CHOICE_INFO: Record<
 const SUMMARY_INSTRUCTIONS_EXAMPLE =
   "Create concise release notes as a bullet-point list, followed by a Markdown table showing lines added and removed by each contributing author."
 
-const LIST_INFO: Record<ListName, { label: string; description: string; placeholder: string }> = {
+// How each list matches, from skipFilterReason in
+// server/src/review/config/filters.ts: titles and branches on a substring
+// (titles ignoring case), logins and labels exactly (labels case-sensitively,
+// as the forges treat them). Shown as a tag so the difference is not lost in
+// the description.
+const LIST_INFO: Record<ListName, { label: string; description: string; placeholder: string; match: string }> = {
   ignoreTitles: {
     label: "Ignore by title",
-    description: "Titles containing any of these phrases, ignoring case.",
+    description: "Phrases in the PR/MR title.",
     placeholder: "WIP",
+    match: "contains, any case",
   },
   skipAuthors: {
     label: "Skip by author",
     description: "Logins of whoever opened or pushed the PR/MR.",
     placeholder: "dependabot[bot]",
+    match: "exact, any case",
   },
   skipLabels: {
     label: "Skip by label",
-    description: "Labels on the PR/MR, matched exactly and case-sensitively.",
+    description: "Labels on the PR/MR.",
     placeholder: "no-review",
+    match: "exact, case-sensitive",
   },
   skipSourceBranches: {
     label: "Skip by source branch",
-    description: "Opened from a branch whose name contains any of these.",
+    description: "Part of the branch the PR/MR is opened from.",
     placeholder: "release/",
+    match: "contains",
   },
   skipTargetBranches: {
     label: "Skip by target branch",
-    description: "Targeting a branch whose name contains any of these.",
+    description: "Part of the branch the PR/MR targets.",
     placeholder: "legacy",
+    match: "contains",
   },
 }
 
@@ -1455,34 +1483,47 @@ export function ConfigFields(props: {
     )
   }
 
-  function listField(name: ListName) {
+  // `off` greys out a list the worker never checks right now (automatic
+  // reviews are off); the saved value is kept.
+  function listField(name: ListName, off = false) {
     const path = `triggers.${name}`
     const fallback = inherited?.triggers[name]
     const info = LIST_INFO[name]
     const id = `list-${name}`
     const error = errors[name]
+    const fieldOff = locked(path) || off
     // Only worth a hint when leaving it empty actually inherits something.
     const hint = isRepo && fallback?.length ? ` ${emptyHint(path, fallback)}` : ""
+    // A list here replaces the inherited one rather than adding to it.
+    const replaces = isRepo && !disabled && form.lists[name].length > 0 && Boolean(fallback?.length)
     return (
-      <Field data-disabled={locked(path)} data-invalid={error ? true : undefined}>
-        <FieldLabel htmlFor={id}>{info.label}</FieldLabel>
+      <Field data-disabled={fieldOff} data-invalid={error ? true : undefined}>
+        <LabelRow effective={config && effective(path, config.triggers[name])}>
+          <FieldLabel htmlFor={id}>{info.label}</FieldLabel>
+          <Badge variant="outline" className="h-4 px-1.5 text-[0.65rem] font-normal">
+            {info.match}
+          </Badge>
+        </LabelRow>
         <TagInput
           id={id}
           value={form.lists[name]}
           onChange={(value) => props.onChange({ ...form, lists: { ...form.lists, [name]: value } })}
           placeholder={fallback?.length ? fallback.join(", ") : `e.g. ${info.placeholder}, then Enter`}
-          disabled={locked(path)}
+          disabled={fieldOff}
           aria-invalid={error ? true : undefined}
         />
         <FieldDescription>
           {info.description}
           {hint}
         </FieldDescription>
-        {config && effectiveLine(path, config.triggers[name])}
+        {replaces && (
+          <FieldDescription className="text-xs">Replaces the inherited list: {fallback!.join(", ")}.</FieldDescription>
+        )}
         {error && <FieldError>{error}</FieldError>}
       </Field>
     )
   }
+
 
   // `off` greys out a value the model call ignores right now, e.g. temperature while thinking.
   function numberField(name: NumberName, extra?: ReactNode, off = false) {
@@ -1597,6 +1638,23 @@ export function ConfigFields(props: {
       ? inheritedFlag("walkthrough")
       : (form.flags.walkthrough ?? inheritedFlag("walkthrough"))
   const walkthroughKnownOff = walkthroughValue === false
+
+  // The Triggers tab. With automatic reviews off the worker drops every
+  // webhook job before looking at push, summary or skip settings (skipReason
+  // in server/src/review/config/filters.ts), so those grey out; only a value
+  // known to be manual does it, so nothing flickers while inherited values load.
+  const reviewChoice = resolvedChoice("review")
+  const reviewManual = reviewChoice === "manual"
+  function resolvedList(name: ListName) {
+    const path = `triggers.${name}`
+    if (fromRepoFile(path)) return config?.triggers[name]
+    return disabled || form.lists[name].length === 0 ? inherited?.triggers[name] : form.lists[name]
+  }
+  const summaryHint = walkthroughKnownOff ? (
+    <OffHint setting="Walkthrough" tab="display" onTabChange={props.onTabChange} />
+  ) : reviewManual ? (
+    <FieldDescription className="text-xs">Only used for automatic reviews.</FieldDescription>
+  ) : undefined
 
   // What a review would run with, unsaved edits included: a field the
   // repository file sets gives the file's value, an empty one the inherited.
@@ -2017,29 +2075,52 @@ export function ConfigFields(props: {
     triggers: (
       <>
         <Section
-          title="Code reviews"
-          description="When Sentryward reviews a pull or merge request, and writes its summary, on its own."
+          title="Automatic reviews"
+          description="When Sentryward reviews a pull or merge request on its own."
         >
-          <div className="grid gap-4 @md/field-group:grid-cols-2">
-            {choiceField("review")}
-            {choiceField("summary")}
-          </div>
-          <ToggleList>{toggles(["reviewOnPush"])}</ToggleList>
-          <ToggleList>{toggles(["fullReviewOnPush"], !reviewOnPushOn)}</ToggleList>
-          <ToggleList>{toggles(["command", "replies", "abortOnClose"])}</ToggleList>
+          {choiceField("review")}
+          <ToggleList>
+            {toggles(["reviewOnPush"], reviewManual)}
+            {/* Only a push that is reviewed at all can be a full review. */}
+            <Nested>{toggles(["fullReviewOnPush"], reviewManual || !reviewOnPushOn)}</Nested>
+          </ToggleList>
+          <ToggleList>{toggles(["abortOnClose"])}</ToggleList>
+        </Section>
+        <FieldSeparator />
+        <Section title="PR summary" description="When automatic reviews also write the PR summary.">
+          {choiceField("summary", reviewManual || walkthroughKnownOff, summaryHint)}
+        </Section>
+        <FieldSeparator />
+        <Section title="Commands and replies" description="What people can ask for in comments on the change.">
+          <ToggleList>{toggles(["command", "replies"])}</ToggleList>
         </Section>
         <FieldSeparator />
         <Section
           title="Skip rules"
-          description="Automatic reviews skip a PR/MR that matches any rule. Manual reviews and /sentryward review always run."
+          description={
+            reviewManual
+              ? "Only used for automatic reviews, which are off."
+              : "Automatic reviews skip a PR/MR that matches any rule. Manual reviews and /sentryward review always run."
+          }
         >
-          <div className="grid gap-x-4 gap-y-5 @md/field-group:grid-cols-2">
-            {listField("ignoreTitles")}
-            {listField("skipAuthors")}
-            {listField("skipSourceBranches")}
-            {listField("skipTargetBranches")}
-            {listField("skipLabels")}
-          </div>
+          <FieldSet>
+            <FieldLegend variant="label">Change</FieldLegend>
+            <div className="grid gap-x-4 gap-y-5 @md/field-group:grid-cols-2">
+              {listField("ignoreTitles", reviewManual)}
+              {listField("skipLabels", reviewManual)}
+            </div>
+          </FieldSet>
+          <FieldSet>
+            <FieldLegend variant="label">People</FieldLegend>
+            <div className="grid gap-x-4 gap-y-5 @md/field-group:grid-cols-2">{listField("skipAuthors", reviewManual)}</div>
+          </FieldSet>
+          <FieldSet>
+            <FieldLegend variant="label">Branches</FieldLegend>
+            <div className="grid gap-x-4 gap-y-5 @md/field-group:grid-cols-2">
+              {listField("skipSourceBranches", reviewManual)}
+              {listField("skipTargetBranches", reviewManual)}
+            </div>
+          </FieldSet>
         </Section>
       </>
     ),
@@ -2129,6 +2210,24 @@ export function ConfigFields(props: {
       : (form.categories ?? inherited?.review.categories)
 
   const asides: Partial<Record<ConfigTab, { node: ReactNode; grid: string }>> = {
+    triggers: {
+      grid: "@6xl:grid-cols-[minmax(0,1fr)_22rem]",
+      node: (
+        <TriggersSummary
+          request={previewRequest}
+          review={reviewChoice}
+          reviewOnPush={resolvedFlag("reviewOnPush")}
+          fullReviewOnPush={resolvedFlag("fullReviewOnPush")}
+          summary={resolvedChoice("summary")}
+          walkthroughOff={walkthroughKnownOff}
+          command={resolvedFlag("command")}
+          replies={resolvedFlag("replies")}
+          abortOnClose={resolvedFlag("abortOnClose")}
+          lists={Object.fromEntries(LISTS.map((name) => [name, resolvedList(name)]))}
+          repoFile={isRepo ? props.repoFile : null}
+        />
+      ),
+    },
     findings: {
       grid: "@6xl:grid-cols-[minmax(0,1fr)_22rem]",
       node: (
@@ -2243,8 +2342,11 @@ export function ConfigFields(props: {
           {props.notices}
           {CONFIG_TABS.map((item) => {
             // The active rail item already names the tab, so the card only says what it covers.
+            // The Card clips its overflow by default, which would make it the
+            // sticky save bar's scroll container and keep the bar from pinning
+            // to the viewport.
             const card = (
-              <Card>
+              <Card className="overflow-visible">
                 <CardHeader>
                   <CardDescription>{item.description}</CardDescription>
                 </CardHeader>

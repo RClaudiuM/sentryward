@@ -21,6 +21,12 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   for the reply. `GET /api/config/schema` now also returns the context windows
   and thinking budgets, and `GET /api/settings/model-prices/lookup?model=`
   returns the price a review of any model gets (#192).
+- The Triggers tab can check a sample change, under a Will this be reviewed?
+  toggle that starts closed: an event, title, author, labels,
+  branches and draft state are run through the worker's own skip rules with
+  the unsaved settings, and it answers Reviewed (with or without the PR
+  summary, every file or new commits only) or the reason it would be skipped.
+  It is served by the new `POST /api/config/triggers/check`.
 
 ### Changed
 
@@ -44,6 +50,15 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   Agentic. Categories have descriptions, a count and All/None buttons, and Min
   confidence has a slider. On every tab, a field's effective value now sits
   beside its label and the "leave empty" hint moved behind an info icon.
+- The Triggers tab is regrouped into Automatic reviews, PR summary, Commands
+  and replies, and Skip rules (by change, people and branches), with a summary
+  panel of when Sentryward runs, unsaved edits included. While automatic
+  reviews are Manual only, the push switches, the PR summary trigger and the
+  skip rules are greyed out, since the worker never reaches them; the PR
+  summary trigger is also greyed out while the walkthrough is off, with a link
+  to the Display tab. Each skip list is tagged with how it matches, the review
+  trigger spells out what happens to drafts, and a repository's list says it
+  replaces the inherited one.
 
 ### Fixed
 

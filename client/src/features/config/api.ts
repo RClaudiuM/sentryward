@@ -374,6 +374,46 @@ export function useConfigPreview(body: PreviewRequest | null) {
   })
 }
 
+// A sample change for the Triggers tab's check (POST /api/config/triggers/check).
+export interface TriggerCheckChange {
+  title: string
+  author: string
+  labels: string[]
+  headRef: string
+  baseRef: string
+  isDraft: boolean
+}
+
+export type TriggerCheckEvent = "opened" | "push" | "command"
+
+export interface TriggerCheckRequest {
+  base: ConfigOverride
+  settings: ConfigOverride
+  event: TriggerCheckEvent
+  change: TriggerCheckChange
+}
+
+// reason is the worker's skip reason, null when the change is reviewed.
+export interface TriggerCheckResult {
+  reason: string | null
+  fullReview: boolean
+  walkthrough: boolean
+}
+
+// Asked again a little after the form or the sample stops changing; the last
+// answer stays up while the next loads, or while the form cannot be checked.
+export function useTriggerCheck(body: TriggerCheckRequest | null) {
+  const key = body ? JSON.stringify(body) : null
+  const settled = useDebounced(key, 300)
+  return useQuery({
+    queryKey: ["trigger-check", settled],
+    queryFn: () => api<TriggerCheckResult>("/config/triggers/check", { method: "POST", body: settled! }),
+    enabled: settled !== null,
+    placeholderData: keepPreviousData,
+    staleTime: Infinity,
+  })
+}
+
 // Patterns are compiled with RE2 by the worker, which rejects lookarounds and
 // backreferences the browser accepts, so the server checks them as they are
 // typed. Answers are keyed by pattern so a check of the previous patterns

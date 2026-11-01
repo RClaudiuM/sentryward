@@ -24,3 +24,22 @@ export const configPreviewSchema = z.object({
 export const checkRulePatternsSchema = z.object({
   patterns: z.array(z.string().max(MAX_RULE_PATTERN_CHARS)).max(MAX_RULES),
 });
+
+// The Triggers tab's "will this be reviewed?" check: the same base and
+// settings as the preview, plus a sample change and what happened to it.
+// Bounds are generous for a hand-typed sample but keep the body small.
+export const triggerCheckSchema = z.object({
+  base: dashboardOverrideSchema,
+  settings: dashboardOverrideSchema,
+  event: z.enum(["opened", "push", "command"]),
+  change: z.object({
+    title: z.string().max(500),
+    author: z.string().max(100),
+    labels: z.array(z.string().max(100)).max(50),
+    headRef: z.string().max(255),
+    baseRef: z.string().max(255),
+    isDraft: z.boolean(),
+  }),
+  // Whoever opened or pushed, when it is not the author.
+  actor: z.string().max(100).optional(),
+});

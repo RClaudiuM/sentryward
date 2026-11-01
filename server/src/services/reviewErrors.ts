@@ -41,7 +41,7 @@ export function errorKind(status: ReviewStatus, error: string | null): ReviewErr
   if (LLM_CONNECTION.some(any)) return "llm_connection";
   if (any(LLM_CONFIG)) return "llm_config";
   // The other reasons a run is skipped come from its trigger settings
-  // (skipReason in worker/runJob.ts).
+  // (skipReason in review/config/filters.ts).
   if (status === "skipped") return "trigger";
   return null;
 }

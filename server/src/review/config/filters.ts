@@ -3,6 +3,10 @@ import type { Config } from "./schema.ts";
 
 type Change = Pick<ChangeSet, "title" | "author" | "labels" | "baseRef" | "headRef">;
 
+// The review_jobs trigger (ReviewTrigger in prisma/schema.prisma), spelled out
+// so the review engine does not import the database client.
+export type ReviewTrigger = "manual" | "webhook" | "comment";
+
 // Why an automatic review should not run for this change, or null. Titles and
 // branches match on a substring (titles ignoring case, so "wip" catches
 // "WIP:"); logins and labels must match exactly, labels case-sensitively as
@@ -27,4 +31,34 @@ export function skipFilterReason(triggers: Config["triggers"], change: Change, a
   if (target) return `The target branch ${change.baseRef} matches "${target}"`;
 
   return null;
+}
+
+// Decided by the worker rather than in the webhook handler, because only then
+// is the full configuration known, including the repository file. A manual
+// review is never skipped; someone asked for it, and so did a permitted review
+// command.
+export function skipReason(
+  job: { trigger: ReviewTrigger; event?: string | null; actor?: string | null },
+  config: Config,
+  change: Parameters<typeof skipFilterReason>[1] & { isDraft: boolean },
+): string | null {
+  const { triggers } = config;
+  if (job.trigger === "webhook") {
+    if (triggers.review === "manual") return "Automatic reviews are turned off for this repository";
+    if (change.isDraft && triggers.review !== "all") return "Draft changes are not reviewed automatically";
+    if (job.event === "push" && !triggers.reviewOnPush) return "New commits are not reviewed automatically";
+    return skipFilterReason(triggers, change, job.actor);
+  }
+  if (job.trigger === "comment" && !triggers.command) {
+    return "Review commands are turned off for this repository";
+  }
+  return null;
+}
+
+// Automatic reviews include the walkthrough only when the summary trigger
+// allows it; a requested review follows the walkthrough setting alone.
+export function walkthroughEnabled(trigger: ReviewTrigger, config: Config, isDraft: boolean): boolean {
+  if (!config.output.walkthrough) return false;
+  if (trigger !== "webhook") return true;
+  return config.triggers.summary === "published" && !isDraft;
 }
