@@ -3,6 +3,7 @@ import { lockChange } from "../src/lib/changeLock.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import {
   ACCESS_LOST_REASON,
+  CLOSED_REASON,
   cancelForDisabledRepositories,
   cancelJob,
   cancelQueuedForClosedChange,
@@ -563,6 +564,15 @@ describe("enqueueFromWebhook", () => {
   it("queues a head again once its job was cancelled only because the repository was off", async () => {
     await job("aaa");
     await cancelForDisabledRepositories([repositoryId], DISABLED_REASON);
+
+    const result = await enqueueFromWebhook({ repositoryId, number: 7, headSha: "aaa", trigger: "webhook" });
+    expect(result).toMatchObject({ queued: true, job: { status: "queued", headSha: "aaa" } });
+  });
+
+  it("queues a head again once its job was cancelled because the change closed", async () => {
+    // The close webhook and the worker's close watch both store CLOSED_REASON.
+    const closed = await job("aaa");
+    await prisma.reviewJob.update({ where: { id: closed.id }, data: { status: "cancelled", error: CLOSED_REASON } });
 
     const result = await enqueueFromWebhook({ repositoryId, number: 7, headSha: "aaa", trigger: "webhook" });
     expect(result).toMatchObject({ queued: true, job: { status: "queued", headSha: "aaa" } });
