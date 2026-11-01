@@ -14,6 +14,14 @@ const SCOPE = "api";
 // forge call that uses it.
 const REFRESH_MARGIN_MS = 2 * 60 * 1000;
 const TOKEN_TIMEOUT_MS = 15_000;
+// Waiting on another caller's refresh counts against the transaction timeout,
+// so it covers two token requests.
+const REFRESH_TX_TIMEOUT_MS = 3 * TOKEN_TIMEOUT_MS;
+// Left over after the token request for the update and the commit.
+const COMMIT_MARGIN_MS = 5_000;
+// Below this, a token request would likely outlive the transaction, so the
+// refresh is not attempted and the old refresh token stays usable.
+const MIN_REQUEST_BUDGET_MS = 1_000;
 
 // A refresh GitLab refuses (the app was revoked, the user deleted or blocked)
 // can only be fixed by connecting again, like a token this server cannot decrypt.
@@ -58,7 +66,11 @@ export function gitlabAuthorizeUrl(host: string, state: string, challenge: strin
   return `${hostOrigin(host)}/oauth/authorize?${params}`;
 }
 
-async function tokenRequest(host: string, grant: Record<string, string>): Promise<OAuthTokens> {
+async function tokenRequest(
+  host: string,
+  grant: Record<string, string>,
+  timeoutMs = TOKEN_TIMEOUT_MS,
+): Promise<OAuthTokens> {
   const url = `${hostOrigin(host)}/oauth/token`;
   const res = await fetch(url, {
     method: "POST",
@@ -70,7 +82,7 @@ async function tokenRequest(host: string, grant: Record<string, string>): Promis
       ...grant,
     }).toString(),
     redirect: "manual",
-    signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const body = (await res.json().catch(() => ({}))) as {
     access_token?: string;
@@ -119,6 +131,11 @@ function accessTokenOf(connection: { encryptedToken: string | null }): string {
 // each use, so two jobs (or the API and a job) refreshing the same connection
 // at once would leave one holding a dead token. The row lock makes the second
 // caller wait, re-read, and find the token the first one stored.
+//
+// Once GitLab answers, the old refresh token is spent, so the new tokens must
+// survive a transaction that times out or fails to commit afterwards. They are
+// then written outside it, guarded on the refresh token they replaced so a
+// newer write (a reconnect, another refresh) is never overwritten.
 export async function gitlabAccessToken(connectionId: string): Promise<string> {
   const current = await prisma.forgeConnection.findUnique({ where: { id: connectionId } });
   if (!current) {
@@ -128,8 +145,40 @@ export async function gitlabAccessToken(connectionId: string): Promise<string> {
     return accessTokenOf(current);
   }
 
+  let rotated: { tokens: OAuthTokens; previous: string } | undefined;
+  try {
+    return await refreshLocked(connectionId, (tokens, previous) => {
+      rotated = { tokens, previous };
+    });
+  } catch (err) {
+    if (!rotated) {
+      throw err;
+    }
+    const { tokens, previous } = rotated;
+    try {
+      await prisma.forgeConnection.updateMany({
+        where: { id: connectionId, encryptedRefreshToken: previous },
+        data: storedTokens(tokens),
+      });
+    } catch (saveErr) {
+      console.error(`[gitlab] could not save refreshed tokens for connection ${connectionId}`, saveErr);
+      throw err;
+    }
+    // GitLab just issued this token, so it is valid even if the guarded
+    // update found the row already replaced.
+    return tokens.accessToken;
+  }
+}
+
+function refreshLocked(
+  connectionId: string,
+  onRotated: (tokens: OAuthTokens, previous: string) => void,
+): Promise<string> {
   return prisma.$transaction(
     async (tx) => {
+      // Prisma's clock starts a little earlier (connection, BEGIN); the
+      // commit margin absorbs that.
+      const startedAt = Date.now();
       await tx.$queryRaw`SELECT id FROM forge_connections WHERE id = ${connectionId}::uuid FOR UPDATE`;
       const locked = await tx.forgeConnection.findUnique({ where: { id: connectionId } });
       if (!locked) {
@@ -142,20 +191,29 @@ export async function gitlabAccessToken(connectionId: string): Promise<string> {
         throw new ReconnectRequiredError();
       }
       const refreshToken = decryptToken(locked.encryptedRefreshToken, "GitLab");
+      // Capped so GitLab's answer arrives while the transaction can still
+      // commit it.
+      const budget = REFRESH_TX_TIMEOUT_MS - (Date.now() - startedAt) - COMMIT_MARGIN_MS;
+      if (budget < MIN_REQUEST_BUDGET_MS) {
+        throw new ForgeError(503, "Timed out waiting to refresh the GitLab token; try again");
+      }
       let tokens: OAuthTokens;
       try {
-        tokens = await tokenRequest(locked.host, { grant_type: "refresh_token", refresh_token: refreshToken });
+        tokens = await tokenRequest(
+          locked.host,
+          { grant_type: "refresh_token", refresh_token: refreshToken },
+          Math.min(TOKEN_TIMEOUT_MS, budget),
+        );
       } catch (err) {
         if (err instanceof ForgeError && (err.status === 400 || err.status === 401)) {
           throw new ReconnectRequiredError();
         }
         throw err;
       }
+      onRotated(tokens, locked.encryptedRefreshToken);
       await tx.forgeConnection.update({ where: { id: connectionId }, data: storedTokens(tokens) });
       return tokens.accessToken;
     },
-    // Waiting on another caller's refresh counts against the timeout, so it
-    // covers two token requests.
-    { timeout: 3 * TOKEN_TIMEOUT_MS },
+    { timeout: REFRESH_TX_TIMEOUT_MS },
   );
 }
