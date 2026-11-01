@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
 import { useUnsavedChanges } from "@/hooks/use-unsaved-changes"
 import { useApiKeys } from "@/features/llm-connections/api"
@@ -50,6 +51,15 @@ export function GlobalConfigForm(props: {
       ? {}
       : { llm: { connection: form.connection as "anthropic" | "openai" | "google" | "ollama" } }
   const canReset = JSON.stringify(global.settings) !== JSON.stringify(resetSettings)
+  // A reset still has to save a connection, so it keeps the selected one and
+  // needs one to keep.
+  const resetHint =
+    form.connection === INHERIT
+      ? "Select an LLM connection first: a reset keeps it, since the global config needs one."
+      : canReset
+        ? "Resets everything except the LLM connection."
+        : "Already at the defaults."
+  const resetDisabled = save.isPending || form.connection === INHERIT || !canReset
 
   async function submit(settings: GlobalConfig["settings"], message: string) {
     try {
@@ -95,13 +105,25 @@ export function GlobalConfigForm(props: {
               {save.isPending && <Loader2 className="animate-spin" />}
               Save global config
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => submit(resetSettings, "Global config reset")}
-              disabled={save.isPending || form.connection === INHERIT || !canReset}
-            >
-              Reset to defaults
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                {/* A disabled button gets no pointer events, so the wrapper carries the tooltip. */}
+                <span tabIndex={resetDisabled ? 0 : undefined}>
+                  <Button
+                    variant="outline"
+                    onClick={() => submit(resetSettings, "Global config reset")}
+                    disabled={resetDisabled}
+                    aria-describedby="reset-defaults-hint"
+                  >
+                    Reset to defaults
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{resetHint}</TooltipContent>
+            </Tooltip>
+            <span id="reset-defaults-hint" className="sr-only">
+              {resetHint}
+            </span>
           </SaveBar>
         }
       />

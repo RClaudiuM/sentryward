@@ -99,6 +99,9 @@ const schema = {
   profiles: { balanced: {}, strict: { review: { blockOn: "major" } } },
   severities: ["critical", "major", "minor"],
   categories: ["security", "bug", "style"],
+  contextWindows: { anthropic: 200_000, openai: 200_000, google: 1_000_000, ollama: 128_000 },
+  defaultContextWindow: 128_000,
+  thinkingBudgets: { off: 0, low: 2_000, medium: 8_000, high: 24_000 },
 }
 
 const repo = (id: string, fullPath: string, extra: Record<string, unknown> = {}) => ({
@@ -201,6 +204,9 @@ const globalRoutes = (extra: Record<string, unknown> = {}) => ({
       { provider: "ollama", stored: false, last4: null, undecryptable: false, baseUrl: null, updatedAt: null, serverDefault: false },
     ],
   },
+  "GET /api/settings/api-keys/openai/status": { status: "active" },
+  "GET /api/settings/api-keys/openai/capabilities": { capabilities: [] },
+  "GET /api/settings/model-prices/lookup": { model: "", price: null, builtIn: null },
   ...extra,
 })
 
@@ -388,6 +394,7 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     await userEvent.click(screen.getByRole("option", { name: /OpenAI/ }))
     await userEvent.click(screen.getByRole("combobox", { name: "Thinking" }))
     await userEvent.click(screen.getByRole("option", { name: "Medium (8k tokens)" }))
+    await userEvent.click(screen.getByRole("button", { name: "Advanced" }))
     await userEvent.click(screen.getByRole("combobox", { name: "Tool support" }))
     await userEvent.click(screen.getByRole("option", { name: "No tools" }))
 
@@ -966,7 +973,8 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     renderWithProviders(<App />, { route: "/configuration?tab=findings" })
 
     expect((await screen.findByText("Effective: critical")).parentElement).toHaveTextContent("profile: balanced")
-    expect(screen.getByText("Effective: minor").parentElement).toHaveTextContent("global")
+    // What the global config sets itself is already in its input.
+    expect(screen.queryByText("Effective: minor")).not.toBeInTheDocument()
   })
 
   it("locks a field the repository file sets, saying the file wins", async () => {
@@ -989,6 +997,69 @@ describe("Configuration page", { timeout: 20_000 }, () => {
     expect(screen.getByRole("combobox", { name: "Report findings at or above" })).toBeEnabled()
     const tag = screen.getByLabelText("Set in .sentryward.yml, which wins over these settings")
     expect(tag).toHaveTextContent(".sentryward.yml")
+  })
+
+  it("greys out the verification and walkthrough models when the repository file turns their feature off", async () => {
+    mockApi(
+      globalRoutes({
+        "GET /api/repos": { repos: [repo("r1", "team/web", { followGlobal: false })] },
+        "GET /api/repos/r1/config": {
+          ref: "main",
+          repoFile: ".sentryward.yml",
+          warnings: [],
+          config: {
+            ...effective,
+            review: { ...effective.review, verify: "off" },
+            output: { ...effective.output, walkthrough: false },
+          },
+          sources: { "review.verify": "repoFile", "output.walkthrough": "repoFile" },
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?repo=r1&tab=llm" })
+
+    await waitFor(() => expect(screen.getByLabelText("Verification model")).toBeDisabled())
+    expect(screen.getByRole("combobox", { name: "Verification thinking" })).toBeDisabled()
+    expect(screen.getByLabelText("Walkthrough model")).toBeDisabled()
+  })
+
+  it("keeps a model field enabled when the repository file turns its feature on over the dashboard", async () => {
+    mockApi(
+      globalRoutes({
+        "GET /api/repos": {
+          repos: [repo("r1", "team/web", { followGlobal: false, settings: { output: { walkthrough: false } } })],
+        },
+        "GET /api/repos/r1/config": {
+          ref: "main",
+          repoFile: ".sentryward.yml",
+          warnings: [],
+          config: { ...effective, output: { ...effective.output, walkthrough: true } },
+          sources: { "output.walkthrough": "repoFile" },
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?repo=r1&tab=llm" })
+
+    const walkthroughModel = await screen.findByLabelText("Walkthrough model")
+    await waitFor(() => expect(screen.getByLabelText("Verification model")).toBeEnabled())
+    expect(walkthroughModel).toBeEnabled()
+    expect(screen.queryByText(/Only used when Walkthrough is on/)).not.toBeInTheDocument()
+  })
+
+  it("shows connection capabilities a repository inherits an override for", async () => {
+    mockApi(
+      globalRoutes({
+        "GET /api/config/global": {
+          ...globalConfig({ llm: { connection: "openai", capabilities: { tools: false } } }),
+          config: { ...effective, llm: { ...effective.llm, capabilities: { thinking: "auto", tools: false } } },
+        },
+        "GET /api/repos": { repos: [repo("r1", "team/web", { followGlobal: false })] },
+        "GET /api/repos/r1/config": { ref: "main", repoFile: null, warnings: [], config: effective, sources: {} },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration?repo=r1&tab=llm" })
+
+    expect(await screen.findByRole("combobox", { name: "Tool support" })).toBeInTheDocument()
   })
 })
 
@@ -1147,5 +1218,188 @@ describe("Model pickers", () => {
     await userEvent.type(screen.getByLabelText("Model"), "anthropic/claude-sonnet-5-5")
 
     expect(screen.getByText("The OpenAI connection can only run openai/... models.")).toBeInTheDocument()
+  })
+})
+
+describe("LLM tab", { timeout: 20_000 }, () => {
+  // Records each save's body and answers like the server.
+  const saving = (bodies: { settings: Record<string, unknown> }[]) => ({
+    "PUT /api/config/global": (init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { settings: Record<string, unknown> }
+      bodies.push(body)
+      return jsonResponse(200, globalConfig(body.settings))
+    },
+  })
+
+  it("reorders fallback models and saves the new order", async () => {
+    const bodies: { settings: Record<string, unknown> }[] = []
+    mockApi(globalRoutes(saving(bodies)))
+    renderWithProviders(<App />, { route: "/configuration" })
+
+    await selectConnectionOnLlmTab()
+    for (const model of ["openai/gpt-5", "openai/gpt-5-mini"]) {
+      await userEvent.click(screen.getByRole("button", { name: "Add fallback model" }))
+      const rows = screen.getAllByLabelText(/^Fallback model \d$/)
+      await userEvent.type(rows.at(-1)!, model)
+    }
+    expect(screen.getByRole("button", { name: "Move fallback model 1 up" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Move fallback model 2 down" })).toBeDisabled()
+
+    await userEvent.click(screen.getByRole("button", { name: "Move fallback model 2 up" }))
+    expect(screen.getByLabelText("Fallback model 1")).toHaveValue("openai/gpt-5-mini")
+    await userEvent.click(screen.getByRole("button", { name: "Save global config" }))
+    await waitFor(() =>
+      expect(bodies.at(-1)?.settings).toMatchObject({ llm: { fallbackModels: ["openai/gpt-5-mini", "openai/gpt-5"] } }),
+    )
+  })
+
+  it("greys out the verification and walkthrough models while their feature is off, keeping saved values", async () => {
+    const bodies: { settings: Record<string, unknown> }[] = []
+    const settings = {
+      llm: { connection: "openai", verifyModel: "openai/gpt-5-mini", walkthroughModel: "openai/gpt-5" },
+      review: { verify: "off" },
+    }
+    mockApi(globalRoutes({ ...saving(bodies), "GET /api/config/global": globalConfig(settings) }))
+    renderWithProviders(<App />, { route: "/configuration" })
+
+    const verifyModel = await screen.findByLabelText("Verification model")
+    expect(verifyModel).toBeDisabled()
+    expect(verifyModel).toHaveValue("openai/gpt-5-mini")
+    expect(screen.getByRole("combobox", { name: "Verification thinking" })).toBeDisabled()
+    expect(screen.getAllByText(/Only used when Verify findings is on/)).toHaveLength(2)
+    expect(screen.getByLabelText("Walkthrough model")).toBeEnabled()
+
+    // The hint opens the tab with the setting that turns it on.
+    await userEvent.click(screen.getAllByRole("button", { name: "Finding Types tab" })[0]!)
+    expect(screen.getByRole("tab", { name: "Finding Types", selected: true })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole("combobox", { name: "Verify findings" }))
+    await userEvent.click(screen.getByRole("option", { name: "All findings" }))
+    await openTab("Display")
+    await userEvent.click(screen.getByRole("switch", { name: "Walkthrough" }))
+
+    await openTab("LLM Config")
+    expect(screen.getByLabelText("Verification model")).toBeEnabled()
+    expect(screen.getByLabelText("Walkthrough model")).toBeDisabled()
+    expect(screen.getByText(/Only used when Walkthrough is on/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("button", { name: "Save global config" }))
+    await waitFor(() =>
+      expect(bodies.at(-1)?.settings).toMatchObject({
+        llm: { verifyModel: "openai/gpt-5-mini", walkthroughModel: "openai/gpt-5" },
+        review: { verify: "all" },
+        output: { walkthrough: false },
+      }),
+    )
+  })
+
+  it("shows what was detected for the model and tests it on the connection that runs the review", async () => {
+    const tested: unknown[] = []
+    mockApi(
+      globalRoutes({
+        "GET /api/settings/api-keys/openai/capabilities": {
+          capabilities: [
+            { model: "openai/gpt-5", endpoint: null, thinking: "options", tools: true, source: "probe", detail: null, checkedAt: "2026-10-04T00:00:00Z" },
+          ],
+        },
+        "POST /api/settings/api-keys/openai/test": (init?: RequestInit) => {
+          const body = JSON.parse(String(init?.body)) as { model: string }
+          tested.push(body)
+          return jsonResponse(
+            200,
+            body.model === "openai/gpt-5"
+              ? { result: { ok: true, latencyMs: 840, inputTokens: 10, outputTokens: 2 } }
+              : { result: { ok: false, reason: "model", message: "model_not_found" } },
+          )
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration" })
+
+    // Nothing runs the review yet, so there is nothing to test.
+    expect(await screen.findByRole("button", { name: "Test model" })).toBeDisabled()
+    await selectOpenAiConnection()
+    await userEvent.type(screen.getByLabelText("Model"), "openai/gpt-5")
+
+    expect(await screen.findByTestId("detected-capabilities")).toHaveTextContent(
+      "Detected for openai/gpt-5: thinking options, tools work.",
+    )
+    await userEvent.click(screen.getByRole("button", { name: "Test model" }))
+    expect(await screen.findByText("Works: answered in 840 ms.")).toBeInTheDocument()
+    expect(tested).toEqual([{ model: "openai/gpt-5" }])
+
+    await userEvent.type(screen.getByLabelText("Model"), "-nope")
+    expect(screen.queryByText("Works: answered in 840 ms.")).not.toBeInTheDocument()
+    expect(screen.getByTestId("detected-capabilities")).toHaveTextContent("Not detected yet")
+    await userEvent.click(screen.getByRole("button", { name: "Test model" }))
+    expect(
+      await screen.findByText("Failed, the connection cannot run this model: model_not_found"),
+    ).toBeInTheDocument()
+    // Testing never saves.
+    expect(screen.getByRole("button", { name: "Save global config" })).toBeEnabled()
+  })
+
+  it("marks a connection that needs attention in the picker", async () => {
+    mockApi(globalRoutes({ "GET /api/settings/api-keys/openai/status": { status: "revoked" } }))
+    renderWithProviders(<App />, { route: "/configuration" })
+
+    await userEvent.click(await screen.findByRole("combobox", { name: "LLM connection" }))
+    expect(await screen.findByRole("option", { name: /OpenAI.*Key rejected/ })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole("option", { name: /OpenAI/ }))
+    expect(screen.getByText(/OpenAI: Key rejected\. Reviews on this connection may fail/)).toBeInTheDocument()
+  })
+
+  it("shows the model's price and what an auto context budget resolves to, following unsaved edits", async () => {
+    mockApi(
+      globalRoutes({
+        "GET /api/settings/model-prices/lookup?model=anthropic%2Fclaude-sonnet-5-5": {
+          model: "anthropic/claude-sonnet-5-5",
+          price: { input: 3, output: 15 },
+          builtIn: { input: 3, output: 15 },
+        },
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration" })
+
+    expect(await screen.findByText("$3.00 input / $15.00 output per million tokens.")).toBeInTheDocument()
+    // 200,000 less 8,000 max output tokens.
+    expect(screen.getByText(/auto = 192,000 tokens/)).toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText("Max output tokens"), "10000")
+    await userEvent.click(screen.getByRole("combobox", { name: "Thinking" }))
+    await userEvent.click(screen.getByRole("option", { name: "High (24k tokens)" }))
+    expect(screen.getByText(/auto = 166,000 tokens/)).toBeInTheDocument()
+
+    await userEvent.clear(screen.getByLabelText("Context budget"))
+    await userEvent.type(screen.getByLabelText("Context budget"), "180000")
+    expect(screen.getByText(/so a full chunk can overflow it/)).toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText("Model"), "openai/custom")
+    expect(await screen.findByText(/No price set for this model/)).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "Set model prices" })).toHaveAttribute("href", "/llm-connections")
+  })
+
+  it("shows the profile on every tab and keeps connection capabilities under Advanced unless overridden", async () => {
+    mockApi(globalRoutes())
+    const { unmount } = renderWithProviders(<App />, { route: "/configuration?tab=files" })
+
+    expect(await screen.findByRole("combobox", { name: "Profile" })).toBeInTheDocument()
+    await openTab("LLM Config")
+    expect(screen.queryByRole("combobox", { name: "Tool support" })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole("button", { name: "Advanced" }))
+    expect(screen.getByRole("combobox", { name: "Tool support" })).toBeInTheDocument()
+    unmount()
+
+    mockApi(
+      globalRoutes({
+        "GET /api/config/global": globalConfig({ llm: { connection: "openai", capabilities: { tools: false } } }),
+      }),
+    )
+    renderWithProviders(<App />, { route: "/configuration" })
+    const toolSupport = await screen.findByRole("combobox", { name: "Tool support" })
+
+    // Clearing the override leaves the section open rather than collapsing it.
+    await userEvent.click(toolSupport)
+    await userEvent.click(screen.getByRole("option", { name: "Auto (detected)" }))
+    expect(screen.getByRole("combobox", { name: "Tool support" })).toHaveTextContent("Auto (detected)")
   })
 })

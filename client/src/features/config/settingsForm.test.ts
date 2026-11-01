@@ -87,6 +87,9 @@ const schema: ConfigSchema = {
   profiles: { balanced: {}, fast: { output: { walkthrough: false } }, strict: { review: { blockOn: "major" } } },
   severities: ["critical", "major", "minor"],
   categories: ["security", "bug", "style"],
+  contextWindows: { anthropic: 200_000 },
+  defaultContextWindow: 128_000,
+  thinkingBudgets: { off: 0, low: 2_000, medium: 8_000, high: 24_000 },
 }
 
 describe("toSettings", () => {

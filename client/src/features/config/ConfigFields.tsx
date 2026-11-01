@@ -1,12 +1,13 @@
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { Link } from "react-router"
-import { Plus, RotateCcw, Trash2 } from "lucide-react"
+import { ArrowDown, ArrowUp, ChevronRight, Loader2, Plus, RotateCcw, Trash2 } from "lucide-react"
 import { SearchableSelect } from "@/components/SearchableSelect"
 import { TagInput } from "@/components/TagInput"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Field,
   FieldContent,
@@ -24,9 +25,30 @@ import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { useApiKeys, useLlmModels } from "@/features/llm-connections/api"
+import {
+  STATUS_LABELS,
+  useApiKeyStatuses,
+  useApiKeys,
+  useLlmCapabilities,
+  useLlmModels,
+  useTestLlmModel,
+  type ApiKey,
+  type LlmConnectionStatus,
+  type ModelCapability,
+  type ModelTestResult,
+} from "@/features/llm-connections/api"
+import { isCheckable, needsAttention } from "@/features/llm-connections/health"
 import { LLM_PROVIDERS } from "@/features/llm-connections/providers"
-import { useConfigSchema, type ConfigOverride, type EffectiveConfig, type LlmProviderName, type Rule } from "./api"
+import { useModelPriceLookup, type ModelPrice } from "@/features/model-prices/api"
+import {
+  useConfigSchema,
+  type ConfigOverride,
+  type ConfigSchema,
+  type EffectiveConfig,
+  type LlmProviderName,
+  type Rule,
+  type ThinkingLevel,
+} from "./api"
 import { ModelCombobox, type ModelSuggestions } from "./ModelCombobox"
 import { ReviewPreview } from "./ReviewPreview"
 import { CONFIG_TABS, TAB_ERRORS, type ConfigTab } from "./tabs"
@@ -353,11 +375,17 @@ function ToggleList(props: { children: ReactNode }) {
 }
 
 const NUMBER_INFO: Record<NumberName, { label: string; description: string }> = {
-  temperature: { label: "Temperature", description: "Lower is more deterministic." },
-  maxTokens: { label: "Max output tokens", description: "Per model call." },
+  // The server drops temperature and adds the thinking budget to the reply
+  // while thinking is on (thinkingSettings in server/src/review/llm/providers.ts).
+  temperature: { label: "Temperature", description: "Lower is more deterministic. Ignored while thinking is on." },
+  maxTokens: {
+    label: "Max output tokens",
+    description: "Per model call. While thinking is on, the thinking budget is added on top.",
+  },
+  // Matches promptCeiling in server/src/review/context/budget.ts.
   contextBudget: {
     label: "Context budget",
-    description: `Prompt token ceiling per chunk; "${AUTO}" derives it from the model's context window.`,
+    description: `Prompt token ceiling per chunk. "${AUTO}" takes the provider's context window less the reply: max output tokens plus the thinking budget.`,
   },
   maxFindings: { label: "Max findings", description: "The most findings a review reports." },
   maxChunks: { label: "Max chunks", description: "Large changes are split into at most this many passes." },
@@ -450,6 +478,8 @@ function TextField(props: {
   max?: number
   step?: number
   effective?: ReactNode
+  // Shown under the description, e.g. what "auto" resolves to.
+  extra?: ReactNode
   error?: string
   disabled?: boolean
 }) {
@@ -479,6 +509,7 @@ function TextField(props: {
       <FieldDescription>
         {props.description} {props.emptyHint}
       </FieldDescription>
+      {props.extra}
       {props.effective && <FieldDescription className="text-xs">{props.effective}</FieldDescription>}
       {props.error && <FieldError>{props.error}</FieldError>}
     </Field>
@@ -835,6 +866,15 @@ function RulesField(props: {
   )
 }
 
+// A copy of rows with two entries exchanged; toSettings keeps array order.
+function swap<T>(rows: T[], a: number, b: number) {
+  const next = [...rows]
+  const moved = next[a]!
+  next[a] = next[b]!
+  next[b] = moved
+  return next
+}
+
 function FallbackModelsField(props: {
   rows: string[]
   onChange: (rows: string[]) => void
@@ -860,6 +900,26 @@ function FallbackModelsField(props: {
             aria-invalid={props.error ? true : undefined}
             suggestions={props.suggestions}
           />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Move fallback model ${index + 1} up`}
+            onClick={() => props.onChange(swap(rows, index, index - 1))}
+            disabled={props.disabled || index === 0}
+          >
+            <ArrowUp />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Move fallback model ${index + 1} down`}
+            onClick={() => props.onChange(swap(rows, index, index + 1))}
+            disabled={props.disabled || index === rows.length - 1}
+          >
+            <ArrowDown />
+          </Button>
           <Button
             type="button"
             variant="ghost"
@@ -907,6 +967,8 @@ function ChoiceField(props: {
   fallback?: string
   description?: ReactNode
   effective?: ReactNode
+  // Shown under the description, e.g. why the field is greyed out.
+  hint?: ReactNode
   error?: string
   disabled?: boolean
 }) {
@@ -926,6 +988,7 @@ function ChoiceField(props: {
         }
       />
       {props.description && <FieldDescription>{props.description}</FieldDescription>}
+      {props.hint}
       {props.effective && <FieldDescription className="text-xs">{props.effective}</FieldDescription>}
       {props.error && <FieldError>{props.error}</FieldError>}
     </Field>
@@ -981,6 +1044,136 @@ function ToggleField(props: {
   )
 }
 
+// Why a saved connection may fail, for the picker, or undefined while it looks fine.
+function attentionLabel(key: ApiKey, status: LlmConnectionStatus | undefined) {
+  if (!needsAttention(key, status)) return undefined
+  if (key.blocked || status === "blocked") return STATUS_LABELS.blocked
+  if (key.undecryptable) return "Unreadable key"
+  return status ? STATUS_LABELS[status] : undefined
+}
+
+// Says why a field is greyed out and opens the tab with the setting that turns it on.
+function OffHint(props: { setting: string; tab: ConfigTab; onTabChange: (tab: ConfigTab) => void }) {
+  const tabLabel = CONFIG_TABS.find((item) => item.value === props.tab)!.label
+  return (
+    <FieldDescription className="text-xs">
+      Only used when {props.setting} is on (
+      <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => props.onTabChange(props.tab)}>
+        {tabLabel} tab
+      </Button>
+      ).
+    </FieldDescription>
+  )
+}
+
+const THINKING_SUPPORT_LABEL: Record<string, string> = {
+  options: "thinking options",
+  model: "the model thinks by itself",
+  none: "no thinking",
+}
+
+// What probes and reviews found the model that will run supports, so an
+// override is only set when that is wrong.
+function DetectedCapabilities(props: { model: string; capability: ModelCapability | undefined; loading: boolean }) {
+  if (!props.model) return null
+  const { capability } = props
+  let text: ReactNode
+  if (props.loading) text = "Checking what was detected..."
+  else if (!capability || (capability.thinking === null && capability.tools === null)) text = "Not detected yet. Test the model to detect it."
+  else {
+    const thinking = capability.thinking === null ? "thinking unknown" : THINKING_SUPPORT_LABEL[capability.thinking]
+    const tools = capability.tools === null ? "tools unknown" : capability.tools ? "tools work" : "no tools"
+    text = `${thinking}, ${tools}.`
+  }
+  return (
+    <p className="text-sm text-muted-foreground" data-testid="detected-capabilities">
+      Detected for <code>{props.model}</code>: {text}
+    </p>
+  )
+}
+
+const TEST_FAILURE: Record<Extract<ModelTestResult, { ok: false }>["reason"], string> = {
+  revoked: "the key was rejected",
+  model: "the connection cannot run this model",
+  unreachable: "the connection could not be reached",
+  output: "the reply was not usable",
+}
+
+// Runs one call against the connection that will run the review, without saving.
+function ModelTest(props: { provider: LlmProviderName | null; model: string; disabled?: boolean }) {
+  // The caller keys this by provider and model, so a result never outlives what was tested.
+  const test = useTestLlmModel()
+  const target = props.provider && props.model
+  const result = test.data?.result
+  return (
+    <div className="flex flex-col gap-1">
+      <div>
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          onClick={() => props.provider && test.mutate({ provider: props.provider, model: props.model })}
+          disabled={props.disabled || !target || test.isPending}
+          title={props.provider ? undefined : "Select an LLM connection to test the model"}
+        >
+          {test.isPending && <Loader2 className="animate-spin" />}
+          Test model
+        </Button>
+      </div>
+      <div role="status" className="text-xs">
+        {result?.ok && (
+          <span className="text-muted-foreground">
+            Works: answered in {result.latencyMs.toLocaleString()} ms.
+          </span>
+        )}
+        {result && !result.ok && (
+          <span className="text-destructive">
+            Failed, {TEST_FAILURE[result.reason]}: {result.message}
+          </span>
+        )}
+        {test.isError && <span className="text-destructive">{test.error.message}</span>}
+      </div>
+    </div>
+  )
+}
+
+const usd = (value: number) => `$${value.toFixed(2)}`
+
+// What the effective model costs, or where to set a price when none is known.
+function ModelPriceHint(props: { model: string }) {
+  const lookup = useModelPriceLookup(props.model)
+  if (!props.model || lookup.isPending || lookup.isError) return null
+  const price: ModelPrice | null = lookup.data.price
+  return (
+    <FieldDescription className="text-xs">
+      {price ? (
+        `${usd(price.input)} input / ${usd(price.output)} output per million tokens.`
+      ) : (
+        <>
+          No price set for this model.{" "}
+          <Link className="underline underline-offset-4" to="/llm-connections">
+            Set model prices
+          </Link>
+          .
+        </>
+      )}
+    </FieldDescription>
+  )
+}
+
+// What "auto" resolves to, the same way as promptCeiling on the server.
+function autoContextBudget(
+  schema: ConfigSchema | undefined,
+  model: string,
+  maxTokens: number | undefined,
+  thinking: ThinkingLevel | undefined,
+) {
+  if (!schema?.contextWindows || !model || maxTokens === undefined) return undefined
+  const provider = model.split("/")[0] ?? ""
+  const window = schema.contextWindows[provider] ?? schema.defaultContextWindow
+  return { window, provider, budget: window - (maxTokens + (schema.thinkingBudgets[thinking ?? "off"] ?? 0)) }
+}
+
 // The editable subset of a review config, shared by the global config and a
 // repository's overrides, split into tabs. `config`/`sources` describe the
 // effective values; `inherited`/`inheritedSources` describe what a field gets
@@ -1014,6 +1207,7 @@ export function ConfigFields(props: {
   const isRepo = mode === "repo"
   const schema = useConfigSchema()
   const apiKeys = useApiKeys()
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   // The model pickers list what the connection that will run the review
   // offers: the inherited one while this scope does not pick its own.
   const modelsProvider =
@@ -1043,9 +1237,12 @@ export function ConfigFields(props: {
   const setNumber = (name: NumberName) => (value: string) =>
     props.onChange({ ...form, numbers: { ...form.numbers, [name]: value } })
 
+  // Only worth showing when the value comes from somewhere else (a profile, a
+  // default, the repository file): what this scope sets is already in its input.
   function effective(path: string, value: unknown) {
     if (!config) return undefined
     const source = sources?.[path]
+    if (source === (isRepo ? "repoSettings" : "global")) return undefined
     return (
       <span className="inline-flex flex-wrap items-center gap-1.5">
         <span>Effective: {describe(value, undefined)}</span>
@@ -1054,10 +1251,19 @@ export function ConfigFields(props: {
     )
   }
 
+  function effectiveLine(path: string, value: unknown) {
+    const line = effective(path, value)
+    return line && <FieldDescription className="text-xs">{line}</FieldDescription>
+  }
+
   // A field the repository file sets cannot be changed from here: the file
   // wins, so an override saved here would do nothing.
   function locked(path: string) {
-    return disabled || (isRepo && sources?.[path] === "repoFile")
+    return disabled || fromRepoFile(path)
+  }
+
+  function fromRepoFile(path: string) {
+    return isRepo && sources?.[path] === "repoFile"
   }
 
   // What "Inherit" resolves to right now, e.g. "critical (from global config)".
@@ -1104,11 +1310,17 @@ export function ConfigFields(props: {
   }
 
   // A model for one purpose; empty falls through the layers and then to llm.model.
-  function purposeModelField(name: "walkthroughModel" | "verifyModel", label: string) {
+  // `off` names the setting (and its tab) without which the model is never
+  // called; the field is greyed out but keeps its value.
+  function purposeModelField(
+    name: "walkthroughModel" | "verifyModel",
+    label: string,
+    off?: { setting: string; tab: ConfigTab },
+  ) {
     const path = `llm.${name}`
     const shown = (llm: EffectiveConfig["llm"]) => llm[name] ?? `same as model (${llm.model})`
     return (
-      <Field data-disabled={locked(path)}>
+      <Field data-disabled={locked(path) || Boolean(off)}>
         <FieldLabel htmlFor={name}>{label}</FieldLabel>
         <ModelCombobox
           id={name}
@@ -1116,19 +1328,20 @@ export function ConfigFields(props: {
           value={form[name]}
           onChange={setField(name)}
           placeholder={inherited ? shown(inherited.llm) : config ? shown(config.llm) : "Same as model"}
-          disabled={locked(path)}
+          disabled={locked(path) || Boolean(off)}
           aria-invalid={errors[name] ? true : undefined}
           suggestions={modelSuggestions}
         />
         <FieldDescription>{emptyHint(path, inherited && shown(inherited.llm))}</FieldDescription>
-        {config && <FieldDescription className="text-xs">{effective(path, shown(config.llm))}</FieldDescription>}
+        {off && <OffHint setting={off.setting} tab={off.tab} onTabChange={props.onTabChange} />}
+        {config && effectiveLine(path, shown(config.llm))}
         {!disabled && !runsOn(form[name]) && mismatchHint}
         {errors[name] && <FieldError>{errors[name]}</FieldError>}
       </Field>
     )
   }
 
-  function choiceField(name: ChoiceName, off = false) {
+  function choiceField(name: ChoiceName, off = false, hint?: ReactNode) {
     const spec = CHOICES.find((choice) => choice.name === name)!
     const path = `${spec.section}.${choiceKey(spec)}`
     const raw = inherited ? at(inherited, path) : undefined
@@ -1151,6 +1364,7 @@ export function ConfigFields(props: {
           ? { inherit: { description: inheritedHint(path, fallback === undefined ? undefined : label(fallback)) } }
           : { fallback: fallback ?? undefined })}
         description={info.description}
+        hint={off ? hint : undefined}
         effective={config && effective(path, label(at(config, path)))}
         disabled={locked(path) || off}
       />
@@ -1180,13 +1394,13 @@ export function ConfigFields(props: {
           {info.description}
           {hint}
         </FieldDescription>
-        {config && <FieldDescription className="text-xs">{effective(path, config.triggers[name])}</FieldDescription>}
+        {config && effectiveLine(path, config.triggers[name])}
         {error && <FieldError>{error}</FieldError>}
       </Field>
     )
   }
 
-  function numberField(name: NumberName) {
+  function numberField(name: NumberName, extra?: ReactNode) {
     const spec = NUMBERS.find((number) => number.name === name)!
     const path = `${spec.section}.${name}`
     const fallback = inherited ? (at(inherited, path) as number | null) : undefined
@@ -1207,6 +1421,7 @@ export function ConfigFields(props: {
         max={spec.nullable ? undefined : spec.max}
         step={spec.nullable ? undefined : spec.step}
         effective={config && effective(path, at(config, path))}
+        extra={extra}
         error={errors[name]}
         disabled={locked(path)}
       />
@@ -1223,6 +1438,77 @@ export function ConfigFields(props: {
   const toolFindingsOn = shownFlag("toolFindings")
   const highLevelSummaryOn = walkthroughOn && shownFlag("highLevelSummary")
   const inheritedSummaryInstructions = inherited?.output.highLevelSummaryInstructions
+  // Only a setting known to be off greys out a model field, so nothing
+  // flickers while the inherited values load. The repository file wins over
+  // both the form and what it inherits.
+  const verifyChoice = fromRepoFile("review.verify")
+    ? config?.review.verify
+    : disabled || form.choices.verify === INHERIT
+      ? inherited?.review.verify
+      : form.choices.verify
+  const verifyOn = verifyChoice !== "off"
+  const walkthroughValue = fromRepoFile("output.walkthrough")
+    ? config?.output.walkthrough
+    : disabled
+      ? inheritedFlag("walkthrough")
+      : (form.flags.walkthrough ?? inheritedFlag("walkthrough"))
+  const walkthroughKnownOff = walkthroughValue === false
+
+  // What a review would run with, unsaved edits included: a field the
+  // repository file sets gives the file's value, an empty one the inherited.
+  const effectiveModel =
+    (locked("llm.model") ? config?.llm.model : form.model.trim() || inherited?.llm.model) ?? ""
+  const typedMaxTokens = form.numbers.maxTokens.trim() ? Number(form.numbers.maxTokens) : undefined
+  const effectiveMaxTokens = locked("llm.maxTokens")
+    ? config?.llm.maxTokens
+    : typedMaxTokens !== undefined && Number.isFinite(typedMaxTokens)
+      ? typedMaxTokens
+      : inherited?.llm.maxTokens
+  const effectiveThinking = locked("llm.thinking")
+    ? config?.llm.thinking
+    : form.choices.thinking === INHERIT
+      ? inherited?.llm.thinking
+      : (form.choices.thinking as ThinkingLevel)
+  const autoBudget = autoContextBudget(schema.data, effectiveModel, effectiveMaxTokens, effectiveThinking)
+  const typedBudget = form.numbers.contextBudget.trim()
+  const budgetValue = typedBudget && typedBudget !== AUTO ? Number(typedBudget) : undefined
+  const budgetHint = autoBudget && (
+    <>
+      <FieldDescription className="text-xs">
+        {AUTO} = {autoBudget.budget.toLocaleString("en-US")} tokens: the {autoBudget.provider} window of{" "}
+        {autoBudget.window.toLocaleString("en-US")} less the reply.
+      </FieldDescription>
+      {budgetValue !== undefined && budgetValue > autoBudget.budget && (
+        <FieldDescription className="text-xs text-destructive">
+          More than the {autoBudget.budget.toLocaleString("en-US")} tokens the{" "}
+          {autoBudget.window.toLocaleString("en-US")} token window leaves after the reply, so a full chunk can overflow
+          it.
+        </FieldDescription>
+      )}
+    </>
+  )
+
+  const capabilities = useLlmCapabilities(modelsProvider)
+  const runningKey = apiKeys.data?.keys.find((key) => key.provider === modelsProvider)
+  // Each endpoint behind a connection detects on its own, so prefer the one in use.
+  const modelCapabilities = (capabilities.data?.capabilities ?? []).filter((item) => item.model === effectiveModel)
+  const detected =
+    modelCapabilities.find((item) => item.endpoint === (runningKey?.baseUrl ?? null)) ?? modelCapabilities[0]
+  // What the scope resolves to, so an override inherited from the global
+  // config counts too; unknown (still loading) is no override.
+  const capabilityOverride = (
+    [
+      ["thinkingSupport", "thinking"],
+      ["toolSupport", "tools"],
+    ] as const
+  ).some(([name, key]) => {
+    const value = form.choices[name] === INHERIT ? inherited?.llm.capabilities[key] : form.choices[name]
+    return String(value ?? "auto") !== "auto"
+  })
+  // Once an override has opened the section, clearing it leaves it open
+  // instead of collapsing it under the cursor. Set during render (React's
+  // "adjusting state when a prop changes"), so there is no extra effect pass.
+  if (capabilityOverride && !advancedOpen) setAdvancedOpen(true)
 
   // The preview follows the form, unsaved edits included: the server layers
   // what the form sets over what it inherits. Values the server would reject
@@ -1234,6 +1520,9 @@ export function ConfigFields(props: {
       : null
 
   const storedConnections = (apiKeys.data?.keys ?? []).filter((key) => key.stored)
+  // Checked live: the picker is where a broken connection should show up.
+  const statuses = useApiKeyStatuses(storedConnections.filter(isCheckable))
+  const runningAttention = runningKey && attentionLabel(runningKey, statuses[runningKey.provider])
   const selectedProvider = form.connection === INHERIT ? null : (form.connection as LlmProviderName)
   const selectedIsMissing = selectedProvider && !storedConnections.some((key) => key.provider === selectedProvider)
   const connectionOptions = [
@@ -1242,6 +1531,11 @@ export function ConfigFields(props: {
       label: LLM_PROVIDERS[key.provider].label,
       description: key.baseUrl ?? (key.last4 ? `key ending in ${key.last4}` : "saved connection"),
       icon: LLM_PROVIDERS[key.provider].icon,
+      badge: attentionLabel(key, statuses[key.provider]) && (
+        <Badge variant="destructive" className="ml-auto">
+          {attentionLabel(key, statuses[key.provider])}
+        </Badge>
+      ),
     })),
     ...(selectedIsMissing
       ? [{
@@ -1258,19 +1552,8 @@ export function ConfigFields(props: {
   const panels: Record<ConfigTab, ReactNode> = {
     llm: (
       <>
-        <Section title="Connection" description="Which preset applies and which saved connection runs the review.">
+        <Section title="Connection" description="Which saved connection runs the review.">
           <div className="grid gap-4 @md/field-group:grid-cols-2">
-            <ChoiceField
-              id="profile"
-              label="Profile"
-              value={form.profile}
-              onChange={setField("profile")}
-              options={profiles}
-              {...choice("profile", inherited?.profile)}
-              description="A preset that fills in values on every tab; anything set here wins over it."
-              effective={config && effective("profile", config.profile)}
-              disabled={locked("profile")}
-            />
             <div className="flex flex-col gap-2">
               <ChoiceField
                 id="llm-connection"
@@ -1303,6 +1586,16 @@ export function ConfigFields(props: {
                 </p>
               )}
               {apiKeys.isError && <p className="text-sm text-destructive">Could not load LLM connections.</p>}
+              {runningAttention && (
+                <p className="text-sm text-destructive">
+                  {LLM_PROVIDERS[runningKey.provider].label}: {runningAttention}. Reviews on this connection may fail; check
+                  it in{" "}
+                  <Link className="underline underline-offset-4" to="/llm-connections">
+                    LLM Connections
+                  </Link>
+                  .
+                </p>
+              )}
             </div>
           </div>
         </Section>
@@ -1324,12 +1617,16 @@ export function ConfigFields(props: {
                 suggestions={modelSuggestions}
               />
               <FieldDescription>
-                provider/model;{" "}
-                {isRepo
-                  ? `leave empty to inherit${inherited ? ` ${inheritedHint("llm.model", inherited.llm.model)}` : ""}.`
-                  : `leave empty to use the default${inherited ? ` (${inherited.llm.model})` : ""}.`}
+                The model that reviews the change, as provider/model.{" "}
+                {emptyHint("llm.model", inherited?.llm.model)}
               </FieldDescription>
-              {config && <FieldDescription className="text-xs">{effective("llm.model", config.llm.model)}</FieldDescription>}
+              <ModelPriceHint model={effectiveModel} />
+              {config && effectiveLine("llm.model", config.llm.model)}
+              <ModelTest
+                key={`${modelsProvider}:${effectiveModel}`}
+                provider={modelsProvider}
+                model={effectiveModel}
+              />
               {!disabled && !runsOn(form.model) && mismatchHint}
               {errors.model && <FieldError>{errors.model}</FieldError>}
             </Field>
@@ -1343,8 +1640,16 @@ export function ConfigFields(props: {
               suggestions={modelSuggestions}
               warning={!disabled && !form.fallbackModels.every(runsOn) ? mismatchHint : undefined}
             />
-            {purposeModelField("walkthroughModel", "Walkthrough model")}
-            {purposeModelField("verifyModel", "Verification model")}
+            {purposeModelField(
+              "walkthroughModel",
+              "Walkthrough model",
+              walkthroughKnownOff ? { setting: "Walkthrough", tab: "display" } : undefined,
+            )}
+            {purposeModelField(
+              "verifyModel",
+              "Verification model",
+              verifyOn ? undefined : { setting: "Verify findings", tab: "findings" },
+            )}
           </div>
         </Section>
         <FieldSeparator />
@@ -1352,11 +1657,15 @@ export function ConfigFields(props: {
           <div className="grid gap-4 @md/field-group:grid-cols-3">
             {numberField("temperature")}
             {numberField("maxTokens")}
-            {numberField("contextBudget")}
+            {numberField("contextBudget", budgetHint)}
           </div>
           <div className="grid gap-4 @md/field-group:grid-cols-2">
             {choiceField("thinking")}
-            {choiceField("verifyThinking")}
+            {choiceField(
+              "verifyThinking",
+              !verifyOn,
+              <OffHint setting="Verify findings" tab="findings" onTabChange={props.onTabChange} />,
+            )}
           </div>
         </Section>
         <FieldSeparator />
@@ -1364,10 +1673,26 @@ export function ConfigFields(props: {
           title="Connection capabilities"
           description="Detected per model by a probe when a model is tested or first used, and corrected by reviews. Set these only when detection is wrong."
         >
-          <div className="grid gap-4 @md/field-group:grid-cols-2">
-            {choiceField("thinkingSupport")}
-            {choiceField("toolSupport")}
-          </div>
+          <DetectedCapabilities
+            model={modelsProvider ? effectiveModel : ""}
+            capability={detected}
+            loading={capabilities.isPending && Boolean(modelsProvider)}
+          />
+          {/* Kept open while an override is set, so it is never hidden. */}
+          <Collapsible open={advancedOpen || capabilityOverride} onOpenChange={setAdvancedOpen}>
+            <CollapsibleTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" className="group -ml-2 w-fit" disabled={capabilityOverride}>
+                <ChevronRight className="transition-transform group-data-[state=open]:rotate-90" />
+                Advanced
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="pt-3">
+              <div className="grid gap-4 @md/field-group:grid-cols-2">
+                {choiceField("thinkingSupport")}
+                {choiceField("toolSupport")}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </Section>
       </>
     ),
@@ -1586,61 +1911,77 @@ export function ConfigFields(props: {
   }
 
   return (
-    <Tabs value={props.tab} onValueChange={(value) => props.onTabChange(value as ConfigTab)}>
-      <TabsList>
+    <div className="flex flex-col gap-4">
+      {/* Above the tabs: a profile fills in values on every one of them. */}
+      <div className="max-w-md">
+        <ChoiceField
+          id="profile"
+          label="Profile"
+          value={form.profile}
+          onChange={setField("profile")}
+          options={profiles}
+          {...choice("profile", inherited?.profile)}
+          description="A preset that fills in values on every tab; anything set here wins over it."
+          effective={config && effective("profile", config.profile)}
+          disabled={locked("profile")}
+        />
+      </div>
+      <Tabs value={props.tab} onValueChange={(value) => props.onTabChange(value as ConfigTab)}>
+        <TabsList>
+          {CONFIG_TABS.map((item) => {
+            const invalid = TAB_ERRORS[item.value].some((key) => errors[key])
+            return (
+              <TabsTrigger key={item.value} value={item.value}>
+                <item.icon />
+                <span>{item.label}</span>
+                {invalid && (
+                  <>
+                    <span aria-hidden className="size-1.5 rounded-full bg-destructive" />
+                    <span className="sr-only">, has errors</span>
+                  </>
+                )}
+              </TabsTrigger>
+            )
+          })}
+        </TabsList>
+        {props.notices}
         {CONFIG_TABS.map((item) => {
-          const invalid = TAB_ERRORS[item.value].some((key) => errors[key])
+          const card = (
+            <Card>
+              <CardHeader>
+                <CardTitle>{item.label}</CardTitle>
+                <CardDescription>{item.description}</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-6">
+                <FieldGroup className="gap-6">{panels[item.value]}</FieldGroup>
+                {props.footer}
+              </CardContent>
+            </Card>
+          )
           return (
-            <TabsTrigger key={item.value} value={item.value}>
-              <item.icon />
-              <span>{item.label}</span>
-              {invalid && (
-                <>
-                  <span aria-hidden className="size-1.5 rounded-full bg-destructive" />
-                  <span className="sr-only">, has errors</span>
-                </>
+            <TabsContent key={item.value} value={item.value}>
+              {item.value === "display" ? (
+                <div className="grid items-start gap-4 @3xl:grid-cols-2">
+                  {card}
+                  <Card role="region" aria-label="Review preview" className="@3xl:sticky @3xl:top-4">
+                    <CardHeader>
+                      <CardTitle>Preview</CardTitle>
+                      <CardDescription>
+                        What Sentryward would post on a sample change with these settings, including unsaved edits.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <ReviewPreview request={previewRequest} />
+                    </CardContent>
+                  </Card>
+                </div>
+              ) : (
+                card
               )}
-            </TabsTrigger>
+            </TabsContent>
           )
         })}
-      </TabsList>
-      {props.notices}
-      {CONFIG_TABS.map((item) => {
-        const card = (
-          <Card>
-            <CardHeader>
-              <CardTitle>{item.label}</CardTitle>
-              <CardDescription>{item.description}</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-6">
-              <FieldGroup className="gap-6">{panels[item.value]}</FieldGroup>
-              {props.footer}
-            </CardContent>
-          </Card>
-        )
-        return (
-          <TabsContent key={item.value} value={item.value}>
-            {item.value === "display" ? (
-              <div className="grid items-start gap-4 @3xl:grid-cols-2">
-                {card}
-                <Card role="region" aria-label="Review preview" className="@3xl:sticky @3xl:top-4">
-                  <CardHeader>
-                    <CardTitle>Preview</CardTitle>
-                    <CardDescription>
-                      What Sentryward would post on a sample change with these settings, including unsaved edits.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <ReviewPreview request={previewRequest} />
-                  </CardContent>
-                </Card>
-              </div>
-            ) : (
-              card
-            )}
-          </TabsContent>
-        )
-      })}
-    </Tabs>
+      </Tabs>
+    </div>
   )
 }
