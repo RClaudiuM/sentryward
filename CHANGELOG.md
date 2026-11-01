@@ -10,6 +10,12 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- The worker's forge cache can no longer grow without bound on large changes.
+  It was limited to 200 entries whatever their size, so a few big monorepo
+  pull or merge requests (whole file lists with patches, or full files) could
+  push the worker toward running out of memory. Cached entries now also stay
+  under 64 MB in total, and a single answer over 8 MB is used for the review
+  but not cached. Closes #188.
 - Renewing a GitLab OAuth connection's access can no longer lose the tokens
   GitLab issued. If the refresh transaction timed out or failed to commit after
   GitLab answered, the new tokens were rolled back while the old refresh token
