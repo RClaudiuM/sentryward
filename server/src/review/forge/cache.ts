@@ -53,8 +53,10 @@ export class ForgeCache {
   private now: () => number;
 
   constructor(options: ForgeCacheOptions = {}) {
-    this.maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
-    this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+    // A negative entry limit would keep the eviction loop running once the
+    // cache is empty, so limits below zero mean "store nothing".
+    this.maxEntries = Math.max(0, options.maxEntries ?? DEFAULT_MAX_ENTRIES);
+    this.maxBytes = Math.max(0, options.maxBytes ?? DEFAULT_MAX_BYTES);
     this.maxEntryBytes = Math.min(options.maxEntryBytes ?? DEFAULT_MAX_ENTRY_BYTES, this.maxBytes);
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.now = options.now ?? Date.now;

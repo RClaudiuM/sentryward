@@ -122,6 +122,15 @@ describe("ForgeCache", () => {
     expect(cache.bytes).toBe(0);
   });
 
+  it("treats a negative limit as storing nothing instead of looping", async () => {
+    for (const options of [{ maxEntries: -1 }, { maxBytes: -1 }]) {
+      const cache = new ForgeCache(options);
+      expect(await cache.memo("a", async () => "aa")).toBe("aa");
+      expect(cache.size).toBe(0);
+      expect(cache.bytes).toBe(0);
+    }
+  });
+
   it("does not keep counting expired or replaced entries", async () => {
     let now = 0;
     const cache = new ForgeCache({ ttlMs: 100, now: () => now });
