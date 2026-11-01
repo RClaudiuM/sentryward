@@ -62,6 +62,8 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- `timeAgo` rounds values that reach a full unit up to that unit instead of
+  showing "60 minutes ago" or "24 hours ago" (#213).
 - The worker's forge cache can no longer grow without bound on large changes.
   It was limited to 200 entries whatever their size, so a few big monorepo
   pull or merge requests (whole file lists with patches, or full files) could
