@@ -161,11 +161,15 @@ export async function gitlabAccessToken(connectionId: string): Promise<string> {
         data: storedTokens(tokens),
       });
     } catch (saveErr) {
-      console.error(`[gitlab] could not save refreshed tokens for connection ${connectionId}`, saveErr);
-      throw err;
+      // The old refresh token is already spent, so the connection will need
+      // reconnecting once this access token expires.
+      console.error(
+        `[gitlab] could not save refreshed tokens for connection ${connectionId}; it will need reconnecting`,
+        saveErr,
+      );
     }
     // GitLab just issued this token, so it is valid even if the guarded
-    // update found the row already replaced.
+    // update found the row already replaced or could not be written.
     return tokens.accessToken;
   }
 }

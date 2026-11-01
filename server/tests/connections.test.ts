@@ -963,6 +963,16 @@ describe("GitLab OAuth", () => {
       expect(decrypt(stored.encryptedRefreshToken!)).toBe("reconnected-refresh");
     });
 
+    it("still returns the rotated access token when saving it after a failed transaction errors", async () => {
+      const connection = await oauthConnection(new Date(Date.now() - 1000));
+      expireTransactionDuringRefresh();
+      vi.spyOn(prisma.forgeConnection, "updateMany").mockRejectedValue(new Error("connection lost"));
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      expect(await gitlabAccessToken(connection.id)).toBe("new-access");
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("will need reconnecting"), expect.any(Error));
+    });
+
     it("asks to reconnect when GitLab refuses the refresh", async () => {
       const connection = await oauthConnection(new Date(Date.now() - 1000));
       vi.stubGlobal(
