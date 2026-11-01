@@ -92,9 +92,10 @@ export async function enqueueFromWebhook(input: EnqueueInput): Promise<WebhookEn
         // A skipped job does not count: a draft marked ready for review keeps its
         // head, and must still be reviewed.
         status: { notIn: ["superseded", "skipped"] },
-        // Nor does one cancelled only because reviews were off: that head was
-        // never reviewed, and turning the repository back on should pick it up.
-        NOT: { status: "cancelled", error: { in: OFF_REASONS } },
+        // Nor does one cancelled only because reviews were off or the change
+        // closed: that head was never reviewed, and turning the repository back
+        // on or reopening the change on the same head should pick it up.
+        NOT: { status: "cancelled", error: { in: UNREVIEWED_CANCEL_REASONS } },
       },
       select: { id: true },
     });
@@ -225,6 +226,10 @@ export const ACCESS_LOST_REASON = "Sentryward lost access to this repository";
 export const NO_REPOSITORY_REASON = "The repository is no longer connected";
 // Reasons that mean the repository is off, not that the review was unwanted.
 const OFF_REASONS = [DISABLED_REASON, ACCESS_LOST_REASON];
+// Cancellations that leave a head unreviewed rather than unwanted, so an
+// automatic trigger may queue it again. Kept apart from OFF_REASONS, which
+// claimState reads: a close must still stop the run as "cancelled".
+const UNREVIEWED_CANCEL_REASONS = [...OFF_REASONS, CLOSED_REASON];
 
 // A closed or merged change needs no review, so its queued jobs are
 // cancelled when the forge reports the close, unless the dashboard settings
