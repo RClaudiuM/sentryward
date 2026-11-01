@@ -74,7 +74,7 @@ describe("searchTerms", () => {
 describe("ForgeCache", () => {
   it("reuses an answer until it expires and evicts the least recently used", async () => {
     let now = 0;
-    const cache = new ForgeCache(2, 100, () => now);
+    const cache = new ForgeCache({ maxEntries: 2, ttlMs: 100, now: () => now });
     let fetches = 0;
     const fetch = async () => ++fetches;
 
@@ -88,6 +88,64 @@ describe("ForgeCache", () => {
 
     now = 500;
     expect(await cache.memo("b", fetch)).toBe(5);
+  });
+
+  it("evicts the least recently used entries to stay under the byte limit", async () => {
+    const cache = new ForgeCache({ maxBytes: 25 });
+    // Each value serializes to 10 characters: a quoted 8-character string.
+    const value = (c: string) => async () => c.repeat(8);
+
+    await cache.memo("a", value("a"));
+    await cache.memo("b", value("b"));
+    expect(cache.bytes).toBe(20);
+    await cache.memo("a", value("x"));
+    await cache.memo("c", value("c"));
+    // "b" was least recently used, and dropping it brings the total to 20.
+    expect(cache.size).toBe(2);
+    expect(cache.bytes).toBe(20);
+    expect(await cache.memo("a", value("x"))).toBe("aaaaaaaa");
+    expect(await cache.memo("b", value("y"))).toBe("yyyyyyyy");
+  });
+
+  it("returns a value over the per-entry limit without storing it", async () => {
+    const cache = new ForgeCache({ maxEntryBytes: 10 });
+    let fetches = 0;
+    const fetch = async () => {
+      fetches++;
+      return "x".repeat(20);
+    };
+
+    expect(await cache.memo("big", fetch)).toBe("x".repeat(20));
+    expect(await cache.memo("big", fetch)).toBe("x".repeat(20));
+    expect(fetches).toBe(2);
+    expect(cache.size).toBe(0);
+    expect(cache.bytes).toBe(0);
+  });
+
+  it("does not keep counting expired or replaced entries", async () => {
+    let now = 0;
+    const cache = new ForgeCache({ ttlMs: 100, now: () => now });
+
+    await cache.memo("a", async () => "aaaaaaaa");
+    now = 500;
+    await cache.memo("a", async () => "bb");
+    expect(cache.bytes).toBe(4);
+
+    // Two concurrent misses for one key: the last one stored is counted once.
+    let release!: () => void;
+    const slow = new Promise<void>((resolve) => (release = resolve));
+    const first = cache.memo("c", async () => {
+      await slow;
+      return "cccccccc";
+    });
+    await cache.memo("c", async () => "dd");
+    release();
+    await first;
+    expect(cache.size).toBe(2);
+    expect(cache.bytes).toBe(14);
+
+    cache.clear();
+    expect(cache.bytes).toBe(0);
   });
 });
 
