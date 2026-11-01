@@ -10,10 +10,12 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 // Tokens a level may spend reasoning. Anthropic and Google take the budget
 // itself; OpenAI takes an effort and spends what it likes, so the budget only
 // sizes the output limit there.
-const BUDGET: Record<ThinkingLevel, number> = { off: 0, low: 2_000, medium: 8_000, high: 24_000 };
+// Exported for the config schema endpoint, so the settings page can show what
+// "auto" context budget resolves to without its own copy.
+export const THINKING_BUDGETS: Record<ThinkingLevel, number> = { off: 0, low: 2_000, medium: 8_000, high: 24_000 };
 
 export function thinkingBudget(level: ThinkingLevel | undefined): number {
-  return BUDGET[level ?? "off"];
+  return THINKING_BUDGETS[level ?? "off"];
 }
 
 // Anthropic counts thinking inside max_tokens and the others count reasoning
@@ -27,7 +29,7 @@ export function effectiveOutputTokens(maxTokens: number, level: ThinkingLevel | 
 // or not (see capabilities.ts for how that is found out).
 export function thinkingProviderOptions(provider: ProviderName, level: ThinkingLevel): ProviderOptions | undefined {
   if (level === "off") return undefined;
-  const budgetTokens = BUDGET[level];
+  const budgetTokens = THINKING_BUDGETS[level];
   switch (provider) {
     case "anthropic":
       return { anthropic: { thinking: { type: "enabled", budgetTokens } } };

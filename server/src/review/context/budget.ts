@@ -7,12 +7,15 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-const CONTEXT_WINDOW: Record<string, number> = {
+// Per provider, not per model. Exported for the config schema endpoint, so the
+// settings page shows what "auto" resolves to without its own copy.
+export const CONTEXT_WINDOW: Record<string, number> = {
   anthropic: 200_000,
   openai: 200_000,
   google: 1_000_000,
   ollama: 128_000,
 };
+export const DEFAULT_CONTEXT_WINDOW = 128_000;
 
 // Very long prompts review worse than several focused ones, so a pass never
 // carries more diff than this even when the window would allow it.
@@ -27,7 +30,7 @@ const MIN_DIFF_TOKENS = 2_000;
 function promptCeiling(config: Config): number {
   const provider = config.llm.model.split("/")[0] ?? "anthropic";
   const reply = effectiveOutputTokens(config.llm.maxTokens, config.llm.thinking);
-  return config.llm.contextBudget ?? (CONTEXT_WINDOW[provider] ?? 128_000) - reply;
+  return config.llm.contextBudget ?? (CONTEXT_WINDOW[provider] ?? DEFAULT_CONTEXT_WINDOW) - reply;
 }
 
 // Diff tokens one pass may carry once the fixed prompt and the reply are paid for.

@@ -48,3 +48,10 @@ export async function listModelPrices(workspaceId: string, now = new Date()) {
     models: [...used].sort().map((model) => ({ model, builtIn: priceFor(model), price: priceFor(model, overrides) })),
   };
 }
+
+// The price a review of one model would be charged at now (null: unknown),
+// and the built-in one it gets without a workspace price.
+export async function lookupModelPrice(workspaceId: string, model: string) {
+  const overrides = await priceOverridesFor(workspaceId);
+  return { model, price: priceFor(model, overrides), builtIn: priceFor(model) };
+}

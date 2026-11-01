@@ -1,7 +1,9 @@
 import type { Request, Response } from "express";
 import { HttpError } from "../lib/httpError.ts";
 import { prisma } from "../lib/prisma.ts";
+import { CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW } from "../review/context/budget.ts";
 import { CATEGORIES, SEVERITIES } from "../review/core/severity.ts";
+import { THINKING_BUDGETS } from "../review/llm/thinking.ts";
 import { PROFILES } from "../review/config/profiles.ts";
 import { repoSettingsRuleIssues } from "../review/config/load.ts";
 import { resolveConfig } from "../review/config/resolve.ts";
@@ -17,6 +19,10 @@ export function getConfigSchema(_req: Request, res: Response) {
     profiles: Object.fromEntries(PROFILE_NAMES.map((name) => [name, PROFILES[name]])),
     severities: SEVERITIES,
     categories: CATEGORIES,
+    // What promptCeiling resolves an "auto" context budget from.
+    contextWindows: CONTEXT_WINDOW,
+    defaultContextWindow: DEFAULT_CONTEXT_WINDOW,
+    thinkingBudgets: THINKING_BUDGETS,
   });
 }
 
