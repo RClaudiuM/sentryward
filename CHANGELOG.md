@@ -15,6 +15,10 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   is now aborted after 30 seconds, so the worker fails the run and frees it
   instead of keeping the whole change in memory, and webhook handlers that
   call the forge respond. Closes #186.
+- Two reviews of the same pull or merge request no longer run at the same
+  time. A newer push now waits for the running review to finish, so an older
+  head that finishes last can no longer overwrite the newer review's summary
+  comment, reopen its fixed findings or become the latest review. Closes #183.
 
 ## [0.3.0] - 2026-10-31
 
