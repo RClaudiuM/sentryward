@@ -8,6 +8,33 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- The LLM Config tab shows what was detected for the model that will run the
+  review (thinking and tool support), and a Test model button runs it on that
+  connection without saving. Connections whose key was rejected, could not be
+  verified, or are blocked are marked in the connection picker (#190).
+- Fallback models can be moved up and down (#191).
+- The LLM Config tab shows the model's price, with a link to set one when it is
+  unknown, and what an `auto` context budget resolves to for the model, max
+  output tokens and thinking level, warning when a typed budget leaves no room
+  for the reply. `GET /api/config/schema` now also returns the context windows
+  and thinking budgets, and `GET /api/settings/model-prices/lookup?model=`
+  returns the price a review of any model gets (#192).
+
+### Changed
+
+- The verification model and verification thinking are greyed out while
+  Verify findings is off, and the walkthrough model while the walkthrough is
+  off, with a link to the tab that turns them on. Saved values are kept (#193).
+- LLM Config tab polish: effective values are only shown when they come from
+  somewhere other than the scope being edited, Profile sits above the tabs
+  since it applies to all of them, Connection capabilities overrides are under
+  an Advanced disclosure (kept open while one is set), Reset to defaults
+  explains what it keeps and why it may be disabled, and the Model,
+  Temperature, Max output tokens and Context budget descriptions match what
+  the server does (#194).
+
 ### Fixed
 
 - The worker's forge cache can no longer grow without bound on large changes.
