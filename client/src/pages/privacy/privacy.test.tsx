@@ -228,6 +228,9 @@ describe("Instance admin pages", () => {
     renderWithProviders(<App />, { route: "/admin/settings" })
 
     expect(await screen.findByText(/REVIEW_RETENTION_DAYS from the server environment \(60 days\)/)).toBeInTheDocument()
+    const direct = screen.getByRole("switch", { name: "Allow direct member additions" })
+    expect(direct).not.toBeChecked()
+    await userEvent.click(direct)
     const hosts = screen.getByLabelText("Allowed hosts")
     await userEvent.type(hosts, "ollama.internal:11434{Enter}")
     await userEvent.type(screen.getByLabelText("Audit log retention (days)"), "365")
@@ -241,6 +244,7 @@ describe("Instance admin pages", () => {
       localOnly: false,
       retentionDays: null,
       auditRetentionDays: 365,
+      allowDirectMemberAdd: true,
     })
   })
 

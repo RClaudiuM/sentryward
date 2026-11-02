@@ -53,7 +53,7 @@ function PolicyTab({ canManage }: { canManage: boolean }) {
             values={data.workspace}
             instance={data.instance}
             readOnly={!canManage}
-            onSave={({ auditRetentionDays: _audit, ...layer }) => save.mutateAsync(layer)}
+            onSave={({ auditRetentionDays: _audit, allowDirectMemberAdd: _direct, ...layer }) => save.mutateAsync(layer)}
           />
         </CardContent>
       </Card>

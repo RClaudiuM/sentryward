@@ -205,9 +205,15 @@ used.
 
 A team always keeps at least one owner, so the last owner has to promote someone
 else before leaving or deleting their account. The **Team** page (`/workspace`)
-lists members, pending invites and settings. Admins can add someone who already
-has an account directly (which shows them which emails are registered on the
-instance) or share a team invite link. In invite mode, only team invites whose
+lists members, pending invites and settings. By default, adding a member requires
+an exact email address and creates an email-bound invitation. Access begins only
+after the recipient accepts. The invitation can be emailed when SMTP is configured,
+or its link can be copied and shared. Account names and emails are not listed.
+Instance admins can enable **Allow direct member additions** under
+**Administration > Instance settings > Policy** to expose the account picker to
+team admins and let them add existing accounts immediately. This setting defaults
+to off on both new and upgraded installations; existing memberships are unaffected.
+Admins can also share a team invite link. In invite mode, only team invites whose
 original creator is currently an instance admin can register new accounts;
 other team invites require an existing account.
 
@@ -783,9 +789,9 @@ so scripts written before workspaces keep working. Routes under
 | POST   | `/api/workspaces`    | `{ name }`, creates a team workspace owned by the caller |
 | PATCH  | `/api/workspaces/:id` | Owners: `{ name }`, renames a team |
 | DELETE | `/api/workspaces/:id` | Owners: deletes a team and everything in it, removing Sentryward's forge hooks first |
-| GET    | `/api/workspaces/:id/members` | Members with their role and join date |
-| POST   | `/api/workspaces/:id/members` | Team admins: `{ email, role? }`, adds an existing account as `admin` or `member` |
-| GET    | `/api/workspaces/:id/member-candidates` | Team admins: accounts not yet in the team, for the add-member picker |
+| GET    | `/api/workspaces/:id/members` | Members with their role and join date; response includes `allowDirectMemberAdd` |
+| POST   | `/api/workspaces/:id/members` | Team admins: `{ email, role? }`; exact email creates `201 { invite, link, emailed }` requiring acceptance by default; when `allowDirectMemberAdd` is enabled, adds an existing account immediately and returns `201 { member }` |
+| GET    | `/api/workspaces/:id/member-candidates` | Team admins: accounts not yet in the team, only when `allowDirectMemberAdd` is enabled; otherwise 403 |
 | PATCH  | `/api/workspaces/:id/members/:userId` | Team admins: `{ role }`; only owners grant or revoke `owner`, and the last owner cannot be demoted |
 | DELETE | `/api/workspaces/:id/members/:userId` | Team admins remove a member; any member may remove themselves to leave |
 | GET    | `/api/workspaces/:id/invites` | Team admins: pending team invites |

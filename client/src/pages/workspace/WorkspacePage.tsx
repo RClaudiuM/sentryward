@@ -336,9 +336,9 @@ function MembersTable({
   )
 }
 
-// The email comes from the picker, so it only has to be chosen.
+// Both the picker and exact-email field submit a normalized address.
 const addMemberSchema = z.object({
-  email: z.string().min(1, "Choose a user"),
+  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
   role: z.enum(["admin", "member"]),
 })
 type AddMemberInput = z.infer<typeof addMemberSchema>
@@ -351,11 +351,11 @@ function avatarIcon(candidate: MemberCandidate) {
   }
 }
 
-// For people who already have an account; the invites tab covers everyone else.
-function AddMemberDialog({ workspace }: { workspace: Workspace }) {
+function AddMemberDialog({ workspace, direct }: { workspace: Workspace; direct: boolean }) {
   const [open, setOpen] = useState(false)
+  const [created, setCreated] = useState<CreatedWorkspaceInvite | null>(null)
   const add = useAddMember(workspace.id)
-  const candidates = useMemberCandidates(workspace.id, open)
+  const candidates = useMemberCandidates(workspace.id, open && direct)
   const options = useMemo<SelectOption[]>(
     () =>
       (candidates.data ?? []).map((candidate) => ({
@@ -374,9 +374,13 @@ function AddMemberDialog({ workspace }: { workspace: Workspace }) {
 
   async function onSubmit(input: AddMemberInput) {
     try {
-      const member = await add.mutateAsync(input)
-      handleOpenChange(false)
-      toast.success(`${member.name} was added`)
+      const result = await add.mutateAsync(input)
+      if ("invite" in result) {
+        setCreated(result)
+      } else {
+        handleOpenChange(false)
+        toast.success(`${result.member.name} was added`)
+      }
     } catch (error) {
       applyServerErrors(error, form.setError)
     }
@@ -384,7 +388,10 @@ function AddMemberDialog({ workspace }: { workspace: Workspace }) {
 
   function handleOpenChange(next: boolean) {
     setOpen(next)
-    if (!next) form.reset()
+    if (!next) {
+      form.reset()
+      setCreated(null)
+    }
   }
 
   return (
@@ -396,66 +403,75 @@ function AddMemberDialog({ workspace }: { workspace: Workspace }) {
         </Button>
       </DialogTrigger>
       <DialogContent>
-        <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
-          <DialogHeader>
-            <DialogTitle>Add a member to {workspace.name}</DialogTitle>
-            <DialogDescription>
-              Adds someone who already has a Sentryward account. They get access right away. To bring in someone new, send
-              an invite instead.
-            </DialogDescription>
-          </DialogHeader>
-          <Controller
-            control={form.control}
-            name="email"
-            render={({ field, fieldState }) => (
-              <Field data-invalid={fieldState.invalid}>
-                <FieldLabel htmlFor="add-member-user">User</FieldLabel>
-                <SearchableSelect
-                  id="add-member-user"
-                  value={field.value || undefined}
-                  onValueChange={field.onChange}
-                  options={options}
-                  placeholder={candidates.isPending ? "Loading people..." : "Select a user"}
-                  searchPlaceholder="Search people..."
-                  emptyText="No one else to add. Invite new people from Pending invites."
-                  searchable
-                  disabled={candidates.isPending}
-                  aria-invalid={fieldState.invalid}
-                />
-                {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
-              </Field>
+        {created ? (
+          <CreatedInviteView created={created} />
+        ) : (
+          <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
+            <DialogHeader>
+              <DialogTitle>Add a member to {workspace.name}</DialogTitle>
+              <DialogDescription>
+                {direct
+                  ? "Adds someone who already has a Sentryward account. They get access right away."
+                  : "Enter their exact email address. They get access only after accepting the invitation."}
+              </DialogDescription>
+            </DialogHeader>
+            {direct ? (
+              <Controller
+                control={form.control}
+                name="email"
+                render={({ field, fieldState }) => (
+                  <Field data-invalid={fieldState.invalid}>
+                    <FieldLabel htmlFor="add-member-user">User</FieldLabel>
+                    <SearchableSelect
+                      id="add-member-user"
+                      value={field.value || undefined}
+                      onValueChange={field.onChange}
+                      options={options}
+                      placeholder={candidates.isPending ? "Loading people..." : "Select a user"}
+                      searchPlaceholder="Search people..."
+                      emptyText="No one else to add. Invite new people from Pending invites."
+                      searchable
+                      disabled={candidates.isPending}
+                      aria-invalid={fieldState.invalid}
+                    />
+                    {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
+                  </Field>
+                )}
+              />
+            ) : (
+              <TextField control={form.control} name="email" label="Email" type="email" autoComplete="off" />
             )}
-          />
-          <Controller
-            control={form.control}
-            name="role"
-            render={({ field }) => (
-              <Field>
-                <FieldLabel htmlFor="add-member-role">Role</FieldLabel>
-                <Select value={field.value} onValueChange={(role) => field.onChange(role as InviteRole)}>
-                  <SelectTrigger id="add-member-role">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="member">Member</SelectItem>
-                    <SelectItem value="admin">Admin</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
-            )}
-          />
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button type="button" variant="outline">
-                Cancel
+            <Controller
+              control={form.control}
+              name="role"
+              render={({ field }) => (
+                <Field>
+                  <FieldLabel htmlFor="add-member-role">Role</FieldLabel>
+                  <Select value={field.value} onValueChange={(role) => field.onChange(role as InviteRole)}>
+                    <SelectTrigger id="add-member-role">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="member">Member</SelectItem>
+                      <SelectItem value="admin">Admin</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              )}
+            />
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline">
+                  Cancel
+                </Button>
+              </DialogClose>
+              <Button type="submit" disabled={form.formState.isSubmitting}>
+                {form.formState.isSubmitting && <Loader2 className="animate-spin" />}
+                {direct ? "Add member" : "Create invite"}
               </Button>
-            </DialogClose>
-            <Button type="submit" disabled={form.formState.isSubmitting}>
-              {form.formState.isSubmitting && <Loader2 className="animate-spin" />}
-              Add member
-            </Button>
-          </DialogFooter>
-        </form>
+            </DialogFooter>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
   )
@@ -464,7 +480,8 @@ function AddMemberDialog({ workspace }: { workspace: Workspace }) {
 // The search and filter sit above the card, so their state lives here and
 // the table only sorts and pages what it is given.
 function MembersTab({ workspace, onLeft }: { workspace: Workspace; onLeft: () => void }) {
-  const { data: members, isPending, isError } = useMembers(workspace.id)
+  const { data, isPending, isError } = useMembers(workspace.id)
+  const members = data?.members
   const { setPage } = usePagination()
   const [query, setQuery] = useState("")
   const [role, setRole] = useState(ALL)
@@ -498,7 +515,7 @@ function MembersTab({ workspace, onLeft }: { workspace: Workspace; onLeft: () =>
       <FilterToolbar>
         <ActiveFilterChips filters={activeFilters} />
         {/* Plain members cannot add anyone; the server refuses them too. */}
-        {workspace.role !== "member" && <AddMemberDialog workspace={workspace} />}
+        {workspace.role !== "member" && <AddMemberDialog workspace={workspace} direct={data?.allowDirectMemberAdd ?? false} />}
         <FilterPopover active={role !== ALL} onClear={() => filterBy(setRole)(ALL)}>
           <FilterSelect
             id="member-role"

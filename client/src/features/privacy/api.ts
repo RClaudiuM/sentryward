@@ -12,6 +12,7 @@ export interface PolicyLayer {
 }
 
 export interface InstanceSettings extends PolicyLayer {
+  allowDirectMemberAdd: boolean
   auditRetentionDays: number | null
 }
 
@@ -116,6 +117,7 @@ export function useSaveInstanceSettings() {
       queryClient.setQueryData(INSTANCE_KEY, data)
       // The workspace page shows the instance layer too.
       queryClient.invalidateQueries({ queryKey: PRIVACY_KEY })
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] })
     },
   })
 }

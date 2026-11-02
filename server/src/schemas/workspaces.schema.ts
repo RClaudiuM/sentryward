@@ -20,7 +20,7 @@ export const createWorkspaceInviteSchema = z.object({
   role: z.enum(["admin", "member"]).default("member"),
 });
 
-// Adds someone who already has an account; owners are made by promotion.
+// Exact email for an invitation, or a direct addition when the instance allows it.
 export const addMemberSchema = z.object({
   email: z.string().trim().toLowerCase().email("Invalid email address"),
   role: z.enum(["admin", "member"]).default("member"),

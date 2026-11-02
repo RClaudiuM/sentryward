@@ -42,6 +42,7 @@ const policySchema = z.object({
   allowedProviders: z.array(z.enum(["anthropic", "openai", "google", "ollama"])),
   allowedHosts: z.array(z.string()),
   localOnly: z.boolean(),
+  allowDirectMemberAdd: z.boolean(),
   retentionDays: daysField,
   auditRetentionDays: daysField,
 })
@@ -52,11 +53,12 @@ const RETENTION_PRESETS = [30, 90, 365]
 const toText = (days: number | null | undefined) => (days == null ? "" : String(days))
 const toDays = (text: string) => (text.trim() === "" ? null : Number(text))
 
-function toInput(values: PolicyLayer & { auditRetentionDays?: number | null }): PolicyInput {
+function toInput(values: PolicyLayer & { auditRetentionDays?: number | null; allowDirectMemberAdd?: boolean }): PolicyInput {
   return {
     allowedProviders: values.allowedProviders,
     allowedHosts: values.allowedHosts,
     localOnly: values.localOnly,
+    allowDirectMemberAdd: values.allowDirectMemberAdd ?? false,
     retentionDays: toText(values.retentionDays),
     auditRetentionDays: toText(values.auditRetentionDays),
   }
@@ -174,6 +176,7 @@ export function PrivacyPolicyForm(props: {
         allowedProviders: values.allowedProviders,
         allowedHosts: values.allowedHosts,
         localOnly: values.localOnly,
+        allowDirectMemberAdd: values.allowDirectMemberAdd,
         retentionDays,
         auditRetentionDays: toDays(values.auditRetentionDays),
       })
@@ -199,6 +202,29 @@ export function PrivacyPolicyForm(props: {
     <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-6">
       <UnsavedChangesDialog open={leaving.blocked} onKeep={leaving.keep} onDiscard={leaving.discard} />
       <FieldGroup>
+        {scope === "instance" && (
+          <Controller
+            control={form.control}
+            name="allowDirectMemberAdd"
+            render={({ field }) => (
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="allow-direct-member-add">Allow direct member additions</FieldLabel>
+                  <FieldDescription>
+                    Lets team admins list every account's name and email and add people without acceptance.
+                    When off, adding a member requires an exact email and an invitation they accept.
+                  </FieldDescription>
+                </FieldContent>
+                <Switch
+                  id="allow-direct-member-add"
+                  checked={field.value}
+                  onCheckedChange={field.onChange}
+                  disabled={readOnly}
+                />
+              </Field>
+            )}
+          />
+        )}
         <FieldSet>
           <FieldLegend>Where code can be sent</FieldLegend>
           <FieldDescription>Reviews that would call anything else fail with the reason, before sending.</FieldDescription>

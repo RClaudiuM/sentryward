@@ -75,7 +75,7 @@ export function useDeleteWorkspace(id: string) {
 export function useMembers(id: string) {
   return useQuery({
     queryKey: membersKey(id),
-    queryFn: () => api<{ members: Member[] }>(`/workspaces/${id}/members`).then((body) => body.members),
+    queryFn: () => api<{ members: Member[]; allowDirectMemberAdd: boolean }>(`/workspaces/${id}/members`),
   })
 }
 
@@ -87,16 +87,14 @@ export function useMemberCandidates(id: string, enabled: boolean) {
   })
 }
 
-// Someone who already has an account joins straight away; anyone else needs
-// an invite. They leave the candidate list once in.
+// The server returns an invitation unless the instance opts into direct additions.
 export function useAddMember(id: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (input: { email: string; role: InviteRole }) =>
-      api<{ member: Member }>(`/workspaces/${id}/members`, { method: "POST", body: JSON.stringify(input) }).then(
-        (body) => body.member,
-      ),
+      api<{ member: Member } | CreatedWorkspaceInvite>(`/workspaces/${id}/members`, { method: "POST", body: JSON.stringify(input) }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: invitesKey(id) })
       queryClient.invalidateQueries({ queryKey: membersKey(id) })
       queryClient.invalidateQueries({ queryKey: candidatesKey(id) })
     },

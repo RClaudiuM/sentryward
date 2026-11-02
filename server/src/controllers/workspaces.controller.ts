@@ -81,18 +81,25 @@ export async function listMembers(req: Request, res: Response) {
     orderBy: [{ role: "asc" }, { createdAt: "asc" }],
   });
   res.json({
+    allowDirectMemberAdd: await allowDirectMemberAdd(),
     members: memberships.map(({ user, role, createdAt }) => ({ ...user, role, joinedAt: createdAt })),
   });
 }
 
-// Who the add-member picker offers: every account not already in the team.
-// It shows team admins the instance's accounts, the same disclosure adding by
-// email makes; a self-hosted instance's user count keeps the full list small.
+// Account discovery and immediate membership require an explicit instance opt-in.
+async function allowDirectMemberAdd(): Promise<boolean> {
+  const settings = await prisma.instanceSettings.findUnique({ where: { id: 1 }, select: { allowDirectMemberAdd: true } });
+  return settings?.allowDirectMemberAdd ?? false;
+}
+
 export async function listMemberCandidates(req: Request, res: Response) {
   const { id } = workspaceParamsSchema.parse(req.params);
   const access = await loadMembership(req.userId!, id);
   requireRole(access.role, "admin");
   requireTeam(access, "Create a team workspace to add people");
+  if (!(await allowDirectMemberAdd())) {
+    throw new HttpError(403, "Account discovery is disabled on this instance");
+  }
   const users = await prisma.user.findMany({
     where: { memberships: { none: { workspaceId: access.workspaceId } } },
     select: { id: true, name: true, email: true, avatarUpdatedAt: true },
@@ -101,16 +108,17 @@ export async function listMemberCandidates(req: Request, res: Response) {
   res.json({ users });
 }
 
-// Brings in someone who already has an account on this instance, without an
-// invite for them to accept; anyone else needs an invite. Answering "no
-// account" tells team admins whether an email is registered, an accepted
-// trade-off for adding people in one step.
 export async function addMember(req: Request, res: Response) {
   const { id } = workspaceParamsSchema.parse(req.params);
   const { email, role } = addMemberSchema.parse(req.body);
   const access = await loadMembership(req.userId!, id);
   requireRole(access.role, "admin");
   requireTeam(access, "Create a team workspace to add people");
+
+  if (!(await allowDirectMemberAdd())) {
+    await sendWorkspaceInvite(req, res, access.workspaceId, email, role);
+    return;
+  }
 
   const user = await prisma.user.findUnique({
     where: { email },
@@ -202,9 +210,21 @@ export async function createWorkspaceInvite(req: Request, res: Response) {
   requireRole(access.role, "admin");
   requireTeam(access, "Create a team workspace to invite people");
 
+  await sendWorkspaceInvite(req, res, access.workspaceId, email, role);
+}
+
+// Both entry points share email binding, membership checks and delivery without
+// looking up whether an invited address has an account.
+async function sendWorkspaceInvite(
+  req: Request,
+  res: Response,
+  workspaceId: string,
+  email: string | undefined,
+  role: "admin" | "member",
+) {
   if (email) {
     const member = await prisma.membership.findFirst({
-      where: { workspaceId: access.workspaceId, user: { email } },
+      where: { workspaceId, user: { email } },
       select: { id: true },
     });
     if (member) {
@@ -213,7 +233,7 @@ export async function createWorkspaceInvite(req: Request, res: Response) {
   }
   const [inviter, workspace] = await Promise.all([
     prisma.user.findUniqueOrThrow({ where: { id: req.userId }, select: { name: true } }),
-    prisma.workspace.findUniqueOrThrow({ where: { id: access.workspaceId }, select: { id: true, name: true } }),
+    prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId }, select: { id: true, name: true } }),
   ]);
   const result = await createInvite({
     email,

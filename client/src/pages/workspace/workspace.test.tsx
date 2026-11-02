@@ -101,7 +101,7 @@ describe("team page", () => {
   function teamApi(routes: Record<string, unknown> = {}) {
     localStorage.setItem("sentryward.workspace", teamWorkspace.id)
     return mockApi({
-      "GET /api/workspaces/w-team/members": { members: [owner, self, plain] },
+      "GET /api/workspaces/w-team/members": { members: [owner, self, plain], allowDirectMemberAdd: true },
       "GET /api/workspaces/w-team/invites": { invites: [] },
       ...routes,
     })
@@ -155,6 +155,39 @@ describe("team page", () => {
     expect(screen.getAllByRole("tab")).toHaveLength(1)
     expect(screen.queryByRole("button", { name: "Add member" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Delete team" })).not.toBeInTheDocument()
+  })
+
+  it.each([false, true])("handles an invitation response when the displayed direct-add setting is %s", async (direct) => {
+    const created = {
+      invite: { id: "i1", email: "kay@example.com", role: "member", expiresAt: "", createdAt: "", invitedBy: null },
+      link: "http://localhost/invite/consent",
+      emailed: false,
+    }
+    const spy = teamApi({
+      "GET /api/workspaces/w-team/members": { members: [owner, self, plain], allowDirectMemberAdd: direct },
+      "GET /api/workspaces/w-team/member-candidates": { users: [{ id: "8", name: "Alan Kay", email: "kay@example.com", avatarUpdatedAt: null }] },
+      "POST /api/workspaces/w-team/members": () => jsonResponse(201, created),
+    })
+    renderWithProviders(<App />, { route: "/workspace" })
+    await userEvent.click(await screen.findByRole("button", { name: "Add member" }))
+    const dialog = await screen.findByRole("dialog")
+    if (direct) {
+      const picker = await within(dialog).findByRole("combobox", { name: "User" })
+      await waitFor(() => expect(picker).toBeEnabled())
+      await userEvent.click(picker)
+      await userEvent.click(await screen.findByRole("option", { name: /Alan Kay/ }))
+    } else {
+      expect(within(dialog).queryByRole("combobox", { name: "User" })).not.toBeInTheDocument()
+      await userEvent.type(within(dialog).getByLabelText("Email"), "Kay@Example.com")
+    }
+    await userEvent.click(within(dialog).getByRole("button", { name: direct ? "Add member" : "Create invite" }))
+    expect(await screen.findByLabelText("Invite link")).toHaveValue(created.link)
+    expect(spy.mock.calls.some(([url]) => String(url).includes("member-candidates"))).toBe(direct)
+    const post = spy.mock.calls.find(([, init]) => init?.method === "POST")
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual({ email: "kay@example.com", role: "member" })
+    await userEvent.click(screen.getByRole("button", { name: "Close" }))
+    await userEvent.click(screen.getByRole("tab", { name: "Pending invites" }))
+    await waitFor(() => expect(spy.mock.calls.some(([url]) => String(url).endsWith("/invites"))).toBe(true))
   })
 
   it("creates an invite with a role and shows its link once", async () => {
@@ -287,7 +320,7 @@ describe("team page", () => {
       const dialog = await openAddMember()
       await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "User" })).toBeEnabled())
       await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }))
-      expect(await within(dialog).findByText("Choose a user")).toBeInTheDocument()
+      expect(await within(dialog).findByText("Enter a valid email address")).toBeInTheDocument()
       expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false)
 
       await pickUser(dialog, "Alan Kay")

@@ -73,6 +73,7 @@ async function instanceSettingsBody() {
       localOnly: row?.localOnly ?? false,
       retentionDays: row?.retentionDays ?? null,
       auditRetentionDays: row?.auditRetentionDays ?? null,
+      allowDirectMemberAdd: row?.allowDirectMemberAdd ?? false,
     },
     // Used when retentionDays is unset; the page says so.
     env: { reviewRetentionDays: env.REVIEW_RETENTION_DAYS ?? null },
