@@ -70,7 +70,7 @@ export async function register(req: Request, res: Response) {
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
-    throw new HttpError(409, "An account with this email already exists");
+    throw emailTaken();
   }
 
   const passwordHash = await hashPassword(password);
