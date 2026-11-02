@@ -48,6 +48,23 @@ describe("POST /api/auth/register", () => {
       .send({ ...validUser, email: "ADA@example.com" });
 
     expect(res.status).toBe(409);
+    expect(res.body.errors).toEqual({ email: ["An account with this email already exists"] });
+  });
+
+  it("returns 409 when a concurrent registration claims the same email", async () => {
+    const [a, b] = await Promise.all([
+      request(app).post("/api/auth/register").send(validUser),
+      request(app).post("/api/auth/register").send(validUser),
+    ]);
+
+    // Both requests pass the up-front email check, so exactly one wins the
+    // unique index; the loser must be a 409, not a 500.
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([201, 409]);
+    expect(a.body.user?.email ?? b.body.user?.email).toBe(validUser.email);
+    // Same field error as the up-front check, so the form shows it on the email field.
+    const loser = a.status === 409 ? a : b;
+    expect(loser.body.errors).toEqual({ email: ["An account with this email already exists"] });
   });
 
   it("returns field errors for invalid input", async () => {

@@ -7,6 +7,7 @@ import { env } from "../config/env.ts";
 import type { Invite, Prisma } from "../generated/prisma/client.ts";
 import { assertInviteEmail, consumeInvite, findValidInvite, joinWorkspace } from "../services/invites.ts";
 import { completePasswordReset, findValidReset, requestPasswordReset } from "../services/passwordResets.ts";
+import { emailTaken, isUniqueViolation } from "../services/users.ts";
 import { mailer } from "../lib/mailer.ts";
 import { createPersonalWorkspace, workspacesFor } from "../services/workspaces.ts";
 import {
@@ -69,28 +70,37 @@ export async function register(req: Request, res: Response) {
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
-    throw new HttpError(409, "An account with this email already exists");
+    throw emailTaken();
   }
 
   const passwordHash = await hashPassword(password);
   // The first account on an empty install bootstraps it as admin. Two people
   // registering at that same instant would both become admin, which is harmless.
   // The invite is spent in the same transaction, so only if the user is created.
-  const user = await prisma.$transaction(async (tx) => {
-    const firstUser = (await tx.user.count()) === 0;
-    const invite = firstUser ? null : await admitRegistration(tx, email, inviteToken);
-    const user = await tx.user.create({
-      data: { name, email, passwordHash, role: firstUser ? "admin" : "member" },
-      select: { ...publicUser, sessionVersion: true },
+  let user;
+  try {
+    user = await prisma.$transaction(async (tx) => {
+      const firstUser = (await tx.user.count()) === 0;
+      const invite = firstUser ? null : await admitRegistration(tx, email, inviteToken);
+      const created = await tx.user.create({
+        data: { name, email, passwordHash, role: firstUser ? "admin" : "member" },
+        select: { ...publicUser, sessionVersion: true },
+      });
+      await createPersonalWorkspace(tx, created);
+      if (invite?.workspaceId) {
+        await joinWorkspace(tx, invite, created.id);
+      } else if (invite) {
+        await consumeInvite(tx, invite);
+      }
+      return created;
     });
-    await createPersonalWorkspace(tx, user);
-    if (invite?.workspaceId) {
-      await joinWorkspace(tx, invite, user.id);
-    } else if (invite) {
-      await consumeInvite(tx, invite);
+  } catch (error) {
+    // Another registration claimed the email between the check and the create.
+    if (isUniqueViolation(error)) {
+      throw emailTaken();
     }
-    return user;
-  });
+    throw error;
+  }
 
   setAuthCookie(res, user);
   res.status(201).json(await session(user.id));
