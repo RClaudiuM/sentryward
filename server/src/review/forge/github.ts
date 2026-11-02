@@ -30,6 +30,18 @@ import {
   type ThreadTarget,
 } from "./types.ts";
 
+// search_code terms come from the model and can be steered by PR content, and
+// a qualifier in them (repo:, org:, user:, in any case or after any
+// punctuation) would widen the search beyond the reviewed repository (DS-009).
+// Quoting the whole term makes GitHub read qualifiers as plain text, so
+// `repo:${project}` stays the only scope; a denylist of qualifier names would
+// always lag GitHub's. GitHub has no escape inside a quoted phrase, so quotes
+// and backslashes are dropped rather than escaped. Null when nothing is left.
+export function quoteCodeSearchTerm(term: string): string | null {
+  const cleaned = term.replace(/["\\]/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned ? `"${cleaned}"` : null;
+}
+
 export interface GitHubAdapterOptions {
   host: string;
   token: () => Promise<string>;
@@ -390,7 +402,11 @@ export class GitHubAdapter implements ForgeAdapter, ForgePublisher, ForgeHooks, 
   // honoured. That suits finding callers: the files a change touches are in
   // its diff, and the rest rarely differ from the default branch.
   async searchCode(project: string, term: string, _ref: string): Promise<string[]> {
-    const query = `${term} repo:${project}`;
+    // An empty term finds nothing; answering locally keeps a refused term from
+    // looking like a GitHub failure to callers that stop searching after one.
+    const quoted = quoteCodeSearchTerm(term);
+    if (!quoted) return [];
+    const query = `${quoted} repo:${project}`;
     const result = await this.http.json<{ items: { path: string }[] }>(
       `/search/code?q=${encodeURIComponent(query)}&per_page=${MAX_CODE_SEARCH_RESULTS}`,
     );

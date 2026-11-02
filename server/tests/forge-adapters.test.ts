@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import jwt from "jsonwebtoken";
 import { describe, expect, it } from "vitest";
-import { GitHubAdapter } from "../src/review/forge/github.ts";
+import { GitHubAdapter, quoteCodeSearchTerm } from "../src/review/forge/github.ts";
 import { GitHubApp, githubApiBase } from "../src/review/forge/githubApp.ts";
 import { GitLabAdapter } from "../src/review/forge/gitlab.ts";
 import { ForgeError } from "../src/review/forge/http.ts";
@@ -398,6 +398,56 @@ describe("GitHubAdapter", () => {
     it("surfaces other failures", async () => {
       const { adapter: gh } = adapter([{ url: COMPARE, status: 502, body: { message: "Bad Gateway" } }]);
       await expect(gh.compareCommits("acme/web", "h1", "h2")).rejects.toBeInstanceOf(ForgeError);
+    });
+  });
+
+  describe("searchCode", () => {
+    const query = (url: string) => new URL(url).searchParams.get("q");
+
+    it("quotes the term so its qualifiers cannot widen the search beyond the reviewed repository", async () => {
+      const { adapter: gh, calls } = adapter([
+        { url: /\/search\/code\?q=/, body: { items: [{ path: "src/a.ts" }, { path: "src/a.ts" }] } },
+      ]);
+      expect(await gh.searchCode("acme/web", "foo repo:other/repo user:attacker", "main")).toEqual(["src/a.ts"]);
+      expect(query(calls[0]!.url)).toBe('"foo repo:other/repo user:attacker" repo:acme/web');
+    });
+
+    it("keeps qualifiers in any case or after any punctuation inside the quotes", async () => {
+      const terms = ["foo REPO:other/x", "foo (repo:other/x)", "foo -repo:acme/web", "foo owner:evil", "foo,org:evil"];
+      const { adapter: gh, calls } = adapter([{ url: /\/search\/code\?q=/, body: { items: [] } }]);
+      for (const term of terms) await gh.searchCode("acme/web", term, "main");
+      expect(calls.map((call) => query(call.url))).toEqual(terms.map((term) => `"${term}" repo:acme/web`));
+    });
+
+    it("drops quotes and backslashes the term could use to close the phrase", async () => {
+      const { adapter: gh, calls } = adapter([{ url: /\/search\/code\?q=/, body: { items: [] } }]);
+      await gh.searchCode("acme/web", 'foo" repo:other/x "bar\\', "main");
+      expect(query(calls[0]!.url)).toBe('"foo repo:other/x bar" repo:acme/web');
+    });
+
+    it("searches code-like text with colons as written", async () => {
+      const { adapter: gh, calls } = adapter([{ url: /\/search\/code\?q=/, body: { items: [] } }]);
+      await gh.searchCode("acme/web", "type:module", "main");
+      await gh.searchCode("acme/web", "user:id lookup", "main");
+      expect(calls.map((call) => query(call.url))).toEqual(['"type:module" repo:acme/web', '"user:id lookup" repo:acme/web']);
+    });
+
+    it("finds nothing for a term with nothing left to search, without asking GitHub", async () => {
+      const { adapter: gh, calls } = adapter([]);
+      expect(await gh.searchCode("acme/web", '""', "main")).toEqual([]);
+      expect(await gh.searchCode("acme/web", "  \\ ", "main")).toEqual([]);
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  describe("quoteCodeSearchTerm", () => {
+    it("wraps the term in quotes, collapsing whitespace", () => {
+      expect(quoteCodeSearchTerm("read_file")).toBe('"read_file"');
+      expect(quoteCodeSearchTerm("  lookup \t repo:evil/org ")).toBe('"lookup repo:evil/org"');
+    });
+
+    it("returns null when only quotes, backslashes or whitespace remain", () => {
+      expect(quoteCodeSearchTerm('" \\ "')).toBeNull();
     });
   });
 });
