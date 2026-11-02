@@ -53,6 +53,16 @@ async function admitRegistration(
   if (env.REGISTRATION_MODE === "invite" && !invite) {
     throw new HttpError(403, "An invite is required to register on this Sentryward instance");
   }
+  if (env.REGISTRATION_MODE === "invite" && invite?.workspaceId) {
+    // Team roles do not authorize new accounts. Check the original creator's
+    // current instance role so demotion or deletion removes that authority.
+    const inviter = invite.invitedById
+      ? await tx.user.findUnique({ where: { id: invite.invitedById }, select: { role: true } })
+      : null;
+    if (inviter?.role !== "admin") {
+      throw new HttpError(403, "This team invite cannot create an account. Ask an instance admin for an invite.");
+    }
+  }
   return invite;
 }
 
