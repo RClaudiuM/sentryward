@@ -62,6 +62,11 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- Invite-only registration now requires an instance invite or a team invite
+  whose original creator is currently an instance admin. Other team invites
+  still let existing accounts join, but cannot create new accounts. Demoting
+  or deleting the creator removes a team invite's registration authority;
+  resending does not grant it (#205).
 - Audit log export filenames use the viewer's local date instead of UTC (#214).
 
 - `timeAgo` rounds values that reach a full unit up to that unit instead of

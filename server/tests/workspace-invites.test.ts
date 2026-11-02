@@ -154,6 +154,7 @@ describe("accepting team invites", () => {
   });
 
   it("adds a signed-in user with the invited role, once", async () => {
+    env.REGISTRATION_MODE = "invite";
     const grace = await createUser("grace@example.com");
     const { token } = await invite({ role: "admin" });
 
@@ -217,9 +218,99 @@ describe("registering from a team invite", () => {
     confirmPassword: "supersecret123",
   };
 
-  it("creates the account in invite mode and joins the team", async () => {
+  it.each([{}, { email: "grace@example.com" }])("rejects a non-admin's team invite in invite mode: %j", async (body) => {
     env.REGISTRATION_MODE = "invite";
-    const { token } = await invite({ email: "grace@example.com" });
+    const team = await request(app).post("/api/workspaces").set("Cookie", owner.cookie).send({ name: "New team" });
+    expect(team.status).toBe(201);
+    teamId = team.body.workspace.id;
+    const { res: created, token } = await invite(body);
+    expect(created.status).toBe(201);
+    const before = {
+      users: await prisma.user.count(),
+      workspaces: await prisma.workspace.count(),
+      memberships: await prisma.membership.count(),
+    };
+
+    const res = await request(app).post("/api/auth/register").send({ ...newUser, inviteToken: token });
+
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe("This team invite cannot create an account. Ask an instance admin for an invite.");
+    expect(await prisma.user.count()).toBe(before.users);
+    expect(await prisma.workspace.count()).toBe(before.workspaces);
+    expect(await prisma.membership.count()).toBe(before.memberships);
+    expect((await prisma.invite.findUniqueOrThrow({ where: { id: created.body.invite.id } })).acceptedAt).toBeNull();
+  });
+
+  it.each(["member", "admin"])("accepts an instance admin's team invite with workspace role %s", async (role) => {
+    env.REGISTRATION_MODE = "invite";
+    await prisma.user.update({ where: { id: owner.user.id }, data: { role: "admin" } });
+    const { res: created, token } = await invite({ email: "grace@example.com", role });
+
+    const res = await request(app).post("/api/auth/register").send({ ...newUser, inviteToken: token });
+
+    expect(res.status).toBe(201);
+    expect(res.body.user.role).toBe("member");
+    expect(res.body.workspaces).toEqual([
+      expect.objectContaining({ personal: true, role: "owner" }),
+      { id: teamId, name: "Acme", personal: false, role },
+    ]);
+    expect((await prisma.invite.findUniqueOrThrow({ where: { id: created.body.invite.id } })).acceptedAt).not.toBeNull();
+  });
+
+  it.each(["demoted", "deleted"])("rejects a team invite whose creator was %s", async (change) => {
+    env.REGISTRATION_MODE = "invite";
+    const admin = await createUser("admin@example.com", "admin");
+    await addMember(teamId, admin.user.id, "admin");
+    const { res: created, token } = await invite({}, admin);
+    if (change === "demoted") {
+      await prisma.user.update({ where: { id: admin.user.id }, data: { role: "member" } });
+    } else {
+      await prisma.user.delete({ where: { id: admin.user.id } });
+    }
+
+    const res = await request(app).post("/api/auth/register").send({ ...newUser, inviteToken: token });
+
+    expect(res.status).toBe(403);
+    expect(await prisma.user.count({ where: { email: newUser.email } })).toBe(0);
+    expect((await prisma.invite.findUniqueOrThrow({ where: { id: created.body.invite.id } })).acceptedAt).toBeNull();
+  });
+
+  it("does not authorize a non-admin's invite when an instance admin resends it", async () => {
+    env.REGISTRATION_MODE = "invite";
+    vi.spyOn(mailer, "configured").mockReturnValue(true);
+    const send = vi.spyOn(mailer, "send").mockResolvedValue();
+    const { res: created } = await invite({ email: newUser.email });
+    const admin = await createUser("admin@example.com", "admin");
+    await addMember(teamId, admin.user.id, "admin");
+    send.mockClear();
+
+    const resent = await request(app)
+      .post(`/api/workspaces/${teamId}/invites/${created.body.invite.id}/resend`)
+      .set("Cookie", admin.cookie);
+    expect(resent.status).toBe(200);
+    const token = /\/invite\/([\w-]+)/.exec(send.mock.calls[0]![0].text)![1]!;
+    const res = await request(app).post("/api/auth/register").send({ ...newUser, inviteToken: token });
+
+    expect(res.status).toBe(403);
+    const stored = await prisma.invite.findUniqueOrThrow({ where: { id: created.body.invite.id } });
+    expect(stored.invitedById).toBe(owner.user.id);
+    expect(stored.acceptedAt).toBeNull();
+  });
+
+  it("rejects even an instance admin's team invite in closed mode", async () => {
+    env.REGISTRATION_MODE = "closed";
+    await prisma.user.update({ where: { id: owner.user.id }, data: { role: "admin" } });
+    const { token } = await invite();
+
+    const res = await request(app).post("/api/auth/register").send({ ...newUser, inviteToken: token });
+
+    expect(res.status).toBe(403);
+    expect(await prisma.user.count({ where: { email: newUser.email } })).toBe(0);
+  });
+
+  it("joins the team in open mode too", async () => {
+    env.REGISTRATION_MODE = "open";
+    const { token } = await invite();
 
     const res = await request(app).post("/api/auth/register").send({ ...newUser, inviteToken: token });
 
@@ -228,13 +319,5 @@ describe("registering from a team invite", () => {
       expect.objectContaining({ personal: true, role: "owner" }),
       { id: teamId, name: "Acme", personal: false, role: "member" },
     ]);
-  });
-
-  it("joins the team in open mode too", async () => {
-    const { token } = await invite();
-
-    const res = await request(app).post("/api/auth/register").send({ ...newUser, inviteToken: token });
-
-    expect(res.body.workspaces).toHaveLength(2);
   });
 });

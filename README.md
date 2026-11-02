@@ -155,11 +155,16 @@ grant access to either.
 | Value | Who can register |
 | ----- | ---------------- |
 | `open` (default) | Anyone who can reach the client |
-| `invite` | Only people with an invite link. A team invite also works here, admitting the new account and placing it in that team |
+| `invite` | People with an instance invite, or a team invite whose original creator is currently an instance admin. An eligible team invite also places the new account in that team |
 | `closed` | No new accounts; admins can still create invites, but they cannot register anyone until the mode allows it. Existing signed-in users can still accept a team invite to join a workspace |
 
 The login page only links to sign-up when registration is `open` or the instance
 has no accounts yet; invitees register from their invite link.
+
+In invite mode, team invites from other users only let existing accounts join
+the team. A team invite stops permitting registration if its original creator
+is demoted from instance admin or deleted. Resending preserves the original
+creator and does not grant registration authority.
 
 An invite link works once and expires after 7 days. Adding an email limits the
 link to that address. When `SMTP_URL` (for example
@@ -202,7 +207,9 @@ A team always keeps at least one owner, so the last owner has to promote someone
 else before leaving or deleting their account. The **Team** page (`/workspace`)
 lists members, pending invites and settings. Admins can add someone who already
 has an account directly (which shows them which emails are registered on the
-instance) or invite anyone else with a team invite link.
+instance) or share a team invite link. In invite mode, only team invites whose
+original creator is currently an instance admin can register new accounts;
+other team invites require an existing account.
 
 ### Run your first review
 
@@ -697,7 +704,7 @@ so scripts written before workspaces keep working. Routes under
 
 | Method | Path                 | Description |
 | ------ | -------------------- | ----------- |
-| POST   | `/api/auth/register` | `{ name, email, password, confirmPassword, inviteToken? }`, sets the auth cookie; `inviteToken` is required when `REGISTRATION_MODE=invite` |
+| POST   | `/api/auth/register` | `{ name, email, password, confirmPassword, inviteToken? }`, sets the auth cookie; after the first account, `REGISTRATION_MODE=invite` requires an instance invite or a team invite whose original creator is currently an instance admin; other valid team invites return 403 |
 | GET    | `/api/auth/registration` | `{ mode, firstUser, mailConfigured }`, so the register page can say whether it is usable and the forgot password page whether a reset can be emailed |
 | GET    | `/api/auth/invites/:token` | The invite's email, inviter and expiry, or 404 when invalid, used or expired |
 | POST   | `/api/auth/invites/:token/accept` | Signed in: joins the team the invite is for and returns that workspace |
