@@ -134,7 +134,9 @@ export function agentTools(input: AgentToolsInput) {
         try {
           paths = (await input.source.searchCode(term)).slice(0, MAX_SEARCH_PATHS);
         } catch (err) {
-          return `Search failed: ${err instanceof Error ? err.message : String(err)}`;
+          // Forge errors can quote the term or response text, so they are
+          // wrapped like any other result.
+          return untrusted(`Search failed: ${err instanceof Error ? err.message : String(err)}`);
         }
         const listed = paths.length ? paths.join("\n") : "(no matches)";
         return spend(untrusted(`Files mentioning "${term}" (default branch index):\n${listed}`));

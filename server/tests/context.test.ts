@@ -664,7 +664,7 @@ describe("code search", () => {
     const gh = new GitHubAdapter({ host: "github.com", token: async () => "t", fetch: stub.fetch });
 
     expect(await gh.searchCode("acme/web", "main", "head")).toEqual(["bin/cli.ts", "src/x.ts"]);
-    expect(new URL(stub.calls[0]!.url).searchParams.get("q")).toBe("main repo:acme/web");
+    expect(new URL(stub.calls[0]!.url).searchParams.get("q")).toBe('"main" repo:acme/web');
   });
 
   it("searches GitLab blobs at the head revision", async () => {

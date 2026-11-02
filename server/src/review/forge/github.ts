@@ -30,21 +30,16 @@ import {
   type ThreadTarget,
 } from "./types.ts";
 
-// GitHub search qualifiers (repo:, org:, user:, language:, path:, ...) let a
-// term widen the search outside the repository under review. search_code terms
-// come from the model and can be steered by PR content (DS-009), so strip every
-// qualifier token before binding the query to `repo:${project}`.
-const GITHUB_SEARCH_QUALIFIER =
-  /(?:^|\s)(?:repo|org|user|language|path|filename|extension|size|is|in|created|updated|author|committer|commenter|label|milestone|project|team|reviewed-by|assignee|involves|mentions|linked|interacts|sort|order|fork|archived|type|status|head|base|merged|draft|no|topic|stars|forks|good-first-issues|help-wanted-issues|pushed|pushed-after|pushed-before|created-after|created-before|updated-after|updated-before|closed-after|closed-before|merged-after|merged-before):[^\s]*/g;
-
-// Keeps only the code-search term, dropping GitHub qualifiers that could point
-// the query at other repositories. Throws when nothing searchable remains.
-export function sanitizeCodeSearchTerm(term: string): string {
-  const cleaned = term.replace(GITHUB_SEARCH_QUALIFIER, " ").trim().replace(/\s+/g, " ");
-  if (!cleaned) {
-    throw new ForgeError(400, `search term "${term}" contains only GitHub search qualifiers`);
-  }
-  return cleaned;
+// search_code terms come from the model and can be steered by PR content, and
+// a qualifier in them (repo:, org:, user:, in any case or after any
+// punctuation) would widen the search beyond the reviewed repository (DS-009).
+// Quoting the whole term makes GitHub read qualifiers as plain text, so
+// `repo:${project}` stays the only scope; a denylist of qualifier names would
+// always lag GitHub's. GitHub has no escape inside a quoted phrase, so quotes
+// and backslashes are dropped rather than escaped. Null when nothing is left.
+export function quoteCodeSearchTerm(term: string): string | null {
+  const cleaned = term.replace(/["\\]/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned ? `"${cleaned}"` : null;
 }
 
 export interface GitHubAdapterOptions {
@@ -407,7 +402,11 @@ export class GitHubAdapter implements ForgeAdapter, ForgePublisher, ForgeHooks, 
   // honoured. That suits finding callers: the files a change touches are in
   // its diff, and the rest rarely differ from the default branch.
   async searchCode(project: string, term: string, _ref: string): Promise<string[]> {
-    const query = `${sanitizeCodeSearchTerm(term)} repo:${project}`;
+    // An empty term finds nothing; answering locally keeps a refused term from
+    // looking like a GitHub failure to callers that stop searching after one.
+    const quoted = quoteCodeSearchTerm(term);
+    if (!quoted) return [];
+    const query = `${quoted} repo:${project}`;
     const result = await this.http.json<{ items: { path: string }[] }>(
       `/search/code?q=${encodeURIComponent(query)}&per_page=${MAX_CODE_SEARCH_RESULTS}`,
     );
