@@ -62,7 +62,7 @@ describe("instance settings", () => {
 
   it("starts open and stores what an admin saves", async () => {
     const empty = await request(app).get("/api/admin/settings").set("Cookie", admin.cookie);
-    expect(empty.body.settings).toEqual({ ...OPEN, auditRetentionDays: null });
+    expect(empty.body.settings).toEqual({ ...OPEN, auditRetentionDays: null, allowDirectMemberAdd: false });
     expect(empty.body.env).toHaveProperty("reviewRetentionDays");
 
     const res = await request(app)
@@ -83,7 +83,22 @@ describe("instance settings", () => {
       localOnly: true,
       retentionDays: 90,
       auditRetentionDays: 365,
+      allowDirectMemberAdd: false,
     });
+  });
+
+  it("stores the consent setting and preserves it when older clients omit it", async () => {
+    const settings = { ...OPEN, auditRetentionDays: null };
+    const enabled = await request(app).put("/api/admin/settings").set("Cookie", admin.cookie)
+      .send({ ...settings, allowDirectMemberAdd: true });
+    expect(enabled.body.settings.allowDirectMemberAdd).toBe(true);
+    const older = await request(app).put("/api/admin/settings").set("Cookie", admin.cookie).send(settings);
+    expect(older.body.settings.allowDirectMemberAdd).toBe(true);
+    const disabled = await request(app).put("/api/admin/settings").set("Cookie", admin.cookie)
+      .send({ ...settings, allowDirectMemberAdd: false });
+    expect(disabled.body.settings.allowDirectMemberAdd).toBe(false);
+    expect((await request(app).put("/api/admin/settings").set("Cookie", admin.cookie)
+      .send({ ...settings, allowDirectMemberAdd: "true" })).status).toBe(400);
   });
 
   it("rejects invalid hosts and retention", async () => {

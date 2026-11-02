@@ -15,6 +15,7 @@ let findingId: string;
 // A team with one owner and one member, holding a connection, an enabled
 // repository and an open finding.
 beforeEach(async () => {
+  await prisma.instanceSettings.deleteMany();
   await prisma.workspace.deleteMany();
   await prisma.user.deleteMany();
   owner = await createUser("owner@example.com");
@@ -195,6 +196,9 @@ describe("members", () => {
   });
 
   describe("adding an existing user", () => {
+    beforeEach(async () => {
+      await prisma.instanceSettings.create({ data: { id: 1, allowDirectMemberAdd: true } });
+    });
     const add = (who: Created, body: Record<string, unknown>, workspace = teamId) =>
       request(app).post(`/api/workspaces/${workspace}/members`).set("Cookie", who.cookie).send(body);
 

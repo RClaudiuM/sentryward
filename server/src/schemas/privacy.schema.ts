@@ -29,6 +29,7 @@ export const privacyLayerSchema = z.object({
 
 export const instanceSettingsSchema = privacyLayerSchema.extend({
   auditRetentionDays: retentionSchema,
+  allowDirectMemberAdd: z.boolean().optional(),
 });
 
 const filters = {

@@ -13,6 +13,7 @@ let teamId: string;
 const originalMode = env.REGISTRATION_MODE;
 
 beforeEach(async () => {
+  await prisma.instanceSettings.deleteMany();
   await prisma.invite.deleteMany();
   await prisma.workspace.deleteMany();
   await prisma.user.deleteMany();
@@ -36,6 +37,67 @@ async function invite(body: Record<string, unknown> = {}, who: Created = owner) 
 
 const accept = (token: string, who: Created) =>
   request(app).post(`/api/auth/invites/${token}/accept`).set("Cookie", who.cookie);
+
+describe("adding members with consent required", () => {
+  const add = (email: string, role = "member", who: Created = owner, workspace = teamId) =>
+    request(app).post(`/api/workspaces/${workspace}/members`).set("Cookie", who.cookie).send({ email, role });
+
+  it.each(["missing", "disabled"])("blocks discovery when settings are %s", async (state) => {
+    if (state === "disabled") await prisma.instanceSettings.create({ data: { id: 1 } });
+    const res = await request(app).get(`/api/workspaces/${teamId}/member-candidates`).set("Cookie", owner.cookie);
+    expect(res.status).toBe(403);
+    expect(res.body).not.toHaveProperty("users");
+    const members = await request(app).get(`/api/workspaces/${teamId}/members`).set("Cookie", owner.cookie);
+    expect(members.body.allowDirectMemberAdd).toBe(false);
+  });
+
+  it.each([true, false])("creates the same pending invite whether an account exists: %s", async (registered) => {
+    if (registered) await createUser("grace@example.com");
+    vi.spyOn(mailer, "configured").mockReturnValue(false);
+    const before = await prisma.membership.count();
+    const res = await add(" Grace@Example.com ", "admin");
+    expect(res.status).toBe(201);
+    expect(Object.keys(res.body).sort()).toEqual(["emailed", "invite", "link"]);
+    expect(res.body.invite).toMatchObject({ email: "grace@example.com", role: "admin" });
+    expect(res.body.emailed).toBe(false);
+    expect(await prisma.membership.count()).toBe(before);
+    expect(await prisma.invite.findUniqueOrThrow({ where: { id: res.body.invite.id } }))
+      .toMatchObject({ workspaceId: teamId, acceptedAt: null });
+  });
+
+  it("grants access only after the addressed user accepts, once", async () => {
+    const grace = await createUser("grace@example.com");
+    const other = await createUser("other@example.com");
+    const res = await add("grace@example.com", "admin");
+    const token = res.body.link.split("/invite/")[1];
+    expect((await accept(token, other)).status).toBe(400);
+    expect((await accept(token, grace)).status).toBe(201);
+    expect(await prisma.membership.findUnique({ where: { userId_workspaceId: { userId: grace.user.id, workspaceId: teamId } } }))
+      .toMatchObject({ role: "admin" });
+    expect((await accept(token, grace)).status).toBe(404);
+  });
+
+  it("keeps team permissions, email validation and existing-member conflicts", async () => {
+    const member = await createUser("member@example.com");
+    await addMember(teamId, member.user.id, "member");
+    expect((await add("new@example.com", "member", member)).status).toBe(403);
+    const outsider = await createUser("outsider@example.com");
+    expect((await add("new@example.com", "member", outsider)).status).toBe(404);
+    expect((await add("new@example.com", "member", owner, owner.workspace.id)).status).toBe(400);
+    expect((await add("owner@example.com")).status).toBe(409);
+    expect((await add("partial")).status).toBe(400);
+    expect((await add("new@example.com", "owner")).status).toBe(400);
+    expect(await prisma.invite.count()).toBe(0);
+  });
+
+  it("delivers an email-bound invitation through the existing mailer", async () => {
+    vi.spyOn(mailer, "configured").mockReturnValue(true);
+    const send = vi.spyOn(mailer, "send").mockResolvedValue();
+    const res = await add("grace@example.com");
+    expect(res.body.emailed).toBe(true);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: "grace@example.com", subject: "Join Acme on Sentryward" }));
+  });
+});
 
 describe("creating team invites", () => {
   it("is for admins and owners only", async () => {

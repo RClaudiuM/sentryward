@@ -796,7 +796,8 @@ export function NotificationTargets() {
   // Members can see the targets; the server lets only admins change them.
   const canManage = workspace?.role === "owner" || workspace?.role === "admin"
   // Names for email recipients, and the picker when adding one.
-  const { data: members } = useMembers(workspace?.id ?? "")
+  const { data: membershipData } = useMembers(workspace?.id ?? "")
+  const members = membershipData?.members
 
   if (isPending) return <Skeleton className="h-40 w-full" />
 

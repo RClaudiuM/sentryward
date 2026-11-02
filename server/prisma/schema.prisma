@@ -660,6 +660,8 @@ model NotificationTarget {
 // loosen it.
 model InstanceSettings {
   id                 Int      @id @default(1)
+  // Opt-in account discovery and membership without recipient acceptance.
+  allowDirectMemberAdd Boolean @default(false) @map("allow_direct_member_add")
   // Empty lists allow everything.
   allowedProviders   String[] @default([]) @map("allowed_providers")
   allowedHosts       String[] @default([]) @map("allowed_hosts")
