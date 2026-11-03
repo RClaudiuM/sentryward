@@ -94,6 +94,9 @@ export interface HookTarget {
 }
 
 export interface ForgeHooks {
+  // Finds Sentryward's hook after registration was interrupted between the
+  // forge accepting it and the database recording its id.
+  findHook(repo: HookTarget, url: string): Promise<string | null>;
   createHook(repo: HookTarget, url: string, secret: string): Promise<string>;
   // Succeeds when the hook is already gone.
   deleteHook(repo: HookTarget, hookId: string): Promise<void>;
