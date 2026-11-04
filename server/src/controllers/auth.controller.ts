@@ -19,6 +19,13 @@ import {
   resetTokenParamsSchema,
 } from "../schemas/auth.schema.ts";
 
+// Fixed argon2id hash (generated once for an unguessable dummy string). When a
+// login comes in for an email with no account, the password is still verified
+// against this hash, so the response time does not reveal whether the email
+// exists. It can never match a real password.
+const DUMMY_PASSWORD_HASH =
+  "$argon2id$v=19$m=65536,t=3,p=4$L7W/kpeaqnwjlKzmvirNog$8m06Pqr6k2ssweft6LsUQSDjMd7MGaF4B7mqVENDo/0";
+
 export const publicUser = {
   id: true,
   name: true,
@@ -80,6 +87,11 @@ export async function register(req: Request, res: Response) {
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
+    // Keep the 409: it is better UX than a generic rejection, and revealing an
+    // account exists here is low risk - anyone can already probe account
+    // existence by attempting to log in, and the login path runs the same
+    // argon2 work for unknown emails (see DUMMY_PASSWORD_HASH). The auth
+    // limiter caps these attempts.
     throw emailTaken();
   }
 
@@ -120,7 +132,12 @@ export async function login(req: Request, res: Response) {
   const { email, password } = loginSchema.parse(req.body);
 
   const user = await prisma.user.findUnique({ where: { email } });
-  if (!user || !(await verifyPassword(user.passwordHash, password))) {
+  // Exactly one argon2 verify runs for both known and unknown emails, so the
+  // response time cannot be used to enumerate accounts.
+  const passwordOk = user
+    ? await verifyPassword(user.passwordHash, password)
+    : await verifyPassword(DUMMY_PASSWORD_HASH, password);
+  if (!user || !passwordOk) {
     throw new HttpError(401, "Invalid email or password");
   }
 

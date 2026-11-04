@@ -1,11 +1,18 @@
 import request from "supertest";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "../src/app.ts";
 import { env } from "../src/config/env.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import { AUTH_COOKIE } from "../src/lib/jwt.ts";
 import { createInvite } from "../src/services/invites.ts";
 import { createUser } from "./helpers/users.ts";
+
+// Keep the real argon2 implementation, but wrap verifyPassword so the login
+// timing tests can count how many verifications an unknown-email request runs.
+vi.mock("../src/lib/password.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/password.ts")>();
+  return { ...actual, verifyPassword: vi.fn(actual.verifyPassword) };
+});
 
 const validUser = {
   name: "Ada Lovelace",
@@ -110,6 +117,42 @@ describe("POST /api/auth/login", () => {
 
     expect(res.status).toBe(401);
     expect(res.body.message).toBe("Invalid email or password");
+  });
+
+  it("runs exactly one password verification when the email is unknown", async () => {
+    const password = await import("../src/lib/password.ts");
+    const verify = vi.mocked(password.verifyPassword);
+    verify.mockResolvedValue(false);
+
+    try {
+      const res = await request(app)
+        .post("/api/auth/login")
+        .send({ email: "nobody@example.com", password: "whatever123" });
+
+      expect(res.status).toBe(401);
+      // The unknown-email path must not skip the argon2 work, or the response
+      // time would reveal whether the email has an account.
+      expect(verify).toHaveBeenCalledTimes(1);
+    } finally {
+      verify.mockRestore();
+    }
+  });
+
+  it("verifies the stored hash once for a wrong password", async () => {
+    const password = await import("../src/lib/password.ts");
+    const verify = vi.mocked(password.verifyPassword);
+    verify.mockResolvedValue(false);
+
+    try {
+      const res = await request(app)
+        .post("/api/auth/login")
+        .send({ email: validUser.email, password: "wrongpassword" });
+
+      expect(res.status).toBe(401);
+      expect(verify).toHaveBeenCalledTimes(1);
+    } finally {
+      verify.mockRestore();
+    }
   });
 });
 
