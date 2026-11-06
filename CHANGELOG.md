@@ -67,6 +67,9 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   still let existing accounts join, but cannot create new accounts. Demoting
   or deleting the creator removes a team invite's registration authority;
   resending does not grant it (#205).
+- Logging in with an unknown email runs the same argon2 work as a wrong
+  password, so response time no longer reveals whether an email has an
+  account. Registration still answers 409 for a taken email, by design (#208).
 - Audit log export filenames use the viewer's local date instead of UTC (#214).
 
 - `timeAgo` rounds values that reach a full unit up to that unit instead of

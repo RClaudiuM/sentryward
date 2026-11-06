@@ -154,6 +154,18 @@ describe("POST /api/auth/login", () => {
       verify.mockRestore();
     }
   });
+
+  it("checks unknown emails against a stable dummy hash made like real ones", async () => {
+    const actual = await vi.importActual<typeof import("../src/lib/password.ts")>("../src/lib/password.ts");
+    const dummy = await actual.dummyPasswordHash();
+
+    expect(await actual.dummyPasswordHash()).toBe(dummy);
+    expect(await actual.verifyPassword(dummy, "whatever123")).toBe(false);
+    // Same algorithm and cost parameters as hashPassword, so verifying it takes
+    // as long as verifying a real account's hash.
+    const params = (hash: string) => hash.split("$").slice(1, 4).join("$");
+    expect(params(dummy)).toBe(params(await actual.hashPassword("x")));
+  });
 });
 
 describe("GET /api/auth/me and POST /api/auth/logout", () => {
