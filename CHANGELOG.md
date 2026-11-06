@@ -8,6 +8,33 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-07
+
+Sentryward remains pre-1.0, and this release changes some default behaviour:
+adding someone to a team now sends them an invitation to accept, and
+invite-only registration accepts fewer team invites. AI findings still need
+human verification.
+
+### Upgrade notes
+
+- Back up the database and `ENCRYPTION_KEY` before upgrading. The server
+  applies this release's migrations on start.
+- Adding a team member by email now creates an invitation the recipient must
+  accept, and the add-member account picker is hidden. To restore immediate
+  additions, an instance admin turns on **Allow direct member additions**
+  under Administration > Instance settings > Policy. It is off on upgraded
+  installations too; existing memberships are unaffected.
+  `GET /api/workspaces/:id/member-candidates` answers 403 while it is off, and
+  `POST /api/workspaces/:id/members` returns `{ invite, link, emailed }`
+  instead of `{ member }`.
+- In invite-only mode, a team invite only creates new accounts when its
+  creator is currently an instance admin. Reissue other outstanding invites
+  from an admin, or use an instance invite.
+- `WORKER_SHUTDOWN_DRAIN_MS` (default 10 minutes) sets how long a stopping
+  worker waits for in-flight reviews before handing them back to the queue.
+  Keep `WORKER_STOP_GRACE_PERIOD` a few minutes above it (the defaults, 10m
+  and 15m, already are), or Compose kills the worker before the hand-back.
+
 ### Added
 
 - The LLM Config tab shows what was detected for the model that will run the
@@ -27,6 +54,7 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   the unsaved settings, and it answers Reviewed (with or without the PR
   summary, every file or new commits only) or the reason it would be skipped.
   It is served by the new `POST /api/config/triggers/check`.
+- The header links to the GitHub repository beside the theme picker.
 
 ### Changed
 
@@ -59,6 +87,18 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   to the Display tab. Each skip list is tagged with how it matches, the review
   trigger spells out what happens to drafts, and a repository's list says it
   replaces the inherited one.
+- Team membership requires consent. Adding someone by email creates an
+  email-bound invitation (emailed when SMTP is configured, otherwise a link to
+  copy), and access begins only when they accept. Team admins no longer see
+  which emails have accounts, unless an instance admin turns on Allow direct
+  member additions, which brings back the account picker and immediate
+  additions (#206).
+- Stopping or upgrading the worker no longer leaves unfinished reviews waiting
+  for stale-lock recovery. The worker waits up to `WORKER_SHUTDOWN_DRAIN_MS`
+  for in-flight reviews, then puts any still running back in the queue without
+  using one of their attempts, so the new worker picks them up about half a
+  minute later. Each handed-back review stays leased until any forge call the
+  old worker had in flight has finished, so it cannot be run twice (#212).
 
 ### Fixed
 
@@ -71,7 +111,21 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   password, so response time no longer reveals whether an email has an
   account. Registration still answers 409 for a taken email, by design (#208).
 - Audit log export filenames use the viewer's local date instead of UTC (#214).
-
+- When two registrations race for the same email, the one that loses gets the
+  usual `409` email field error instead of a server error.
+- The SSRF guard refuses reserved IPv4 ranges and IPv6 addresses that carry
+  an internal IPv4 address (IPv4-mapped, NAT64 and 6to4), classified by the
+  address they carry. Local-only mode keeps its previous list of internal
+  addresses, so it does not start trusting public hosts reached through those
+  ranges (#207).
+- The agentic `search_code` tool on GitHub sends the model's term as one
+  quoted phrase, so search qualifiers in it (such as `repo:` or `org:`) can no
+  longer point the search at other repositories. An empty term finds nothing
+  instead of failing the caller search (#211).
+- Turning reviews on for a repository twice at once, or after a forge request
+  that timed out, no longer leaves a duplicate or orphaned webhook. The
+  registration is reconciled with the forge's existing hooks by URL, and a
+  hook created for a repository removed meanwhile is deleted.
 - `timeAgo` rounds values that reach a full unit up to that unit instead of
   showing "60 minutes ago" or "24 hours ago", and past and future times now
   round halfway values the same way (90 seconds ago reads "2 minutes ago")
@@ -998,7 +1052,8 @@ boundaries.
 - The Docker Compose setup is for development, not public production hosting.
 - Registration is open, with no invitation gate.
 
-[Unreleased]: https://github.com/rdlugs/sentryward/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/rdlugs/sentryward/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/rdlugs/sentryward/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rdlugs/sentryward/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rdlugs/sentryward/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rdlugs/sentryward/compare/v0.1.0-alpha.2...v0.1.0
