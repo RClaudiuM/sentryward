@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 import { GitPullRequest, MessageSquareCode, ServerCog, type LucideIcon } from "lucide-react"
+import { GitHubLink } from "@/components/github-link"
 import { ModeToggle } from "@/components/mode-toggle"
 import { WaveformBackground } from "@/features/auth/WaveformBackground"
 import { ReviewDemo } from "@/features/auth/ReviewDemo"
@@ -88,8 +89,9 @@ export function AuthLayout({ children }: { children: ReactNode }) {
     <div className="grid min-h-svh lg:grid-cols-2">
       <BrandPanel />
       <main className="relative flex flex-col items-center justify-center bg-dots p-6 md:p-10">
-        <div className="absolute top-4 right-4">
+        <div className="absolute top-4 right-4 flex items-center gap-1">
           <ModeToggle />
+          <GitHubLink />
         </div>
         <div className="flex w-full max-w-sm flex-col gap-8">
           <div className="lg:hidden">
