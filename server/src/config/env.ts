@@ -60,6 +60,13 @@ const envSchema = z.object({
   // and its slot freed, so a hung forge fetch cannot stall the worker. Raise it
   // for repositories whose reviews run longer.
   WORKER_MAX_RUN_MS: z.coerce.number().int().positive().default(30 * 60 * 1000),
+  // How long a stopping worker waits for its in-flight reviews. Those still
+  // running afterwards go back to the queue without using an attempt. Keep it
+  // below the container's stop grace period (WORKER_STOP_GRACE_PERIOD in the
+  // production Compose file), or the worker is killed before it can hand them
+  // back and they wait for stale-lock recovery instead. Keep it above 5 minutes
+  // (a thread reply's time limit) so in-flight replies always finish.
+  WORKER_SHUTDOWN_DRAIN_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
   // Days a finished review keeps its full result. Older superseded, skipped and
   // cancelled jobs are deleted, and other finished jobs keep only their summary.
   // Unset keeps everything.

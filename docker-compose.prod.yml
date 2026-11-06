@@ -77,10 +77,12 @@ services:
     image: ghcr.io/rdlugs/sentryward:${SENTRYWARD_VERSION:-latest}
     restart: unless-stopped
     command: ["node", "--import", "tsx", "src/worker/index.ts"]
-    # The worker finishes in-flight reviews on SIGTERM. Compose's default 10s
-    # would kill them mid-run, leaving them stuck until stale-lock recovery
-    # (WORKER_LOCK_TIMEOUT_MS) retries them. Waiting longer than the lock
-    # timeout gains nothing, since the job is recovered by then anyway.
+    # On SIGTERM the worker waits WORKER_SHUTDOWN_DRAIN_MS (default 10m) for
+    # in-flight reviews, then hands any still running (they may take up to
+    # WORKER_MAX_RUN_MS) back to the queue without using an attempt and exits.
+    # The grace period must outlast the drain, or Compose kills the worker
+    # before the hand-back and those reviews wait for stale-lock recovery
+    # (WORKER_LOCK_TIMEOUT_MS) and a fresh attempt instead.
     stop_grace_period: ${WORKER_STOP_GRACE_PERIOD:-15m}
     # As PID 1, node drops a SIGTERM that arrives before the handler is
     # registered (while tsx loads the worker), and the stop then waits the
@@ -97,6 +99,7 @@ services:
       WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-3}
       WORKER_HEARTBEAT_INTERVAL_MS: ${WORKER_HEARTBEAT_INTERVAL_MS:-60000}
       WORKER_MAX_RUN_MS: ${WORKER_MAX_RUN_MS:-1800000}
+      WORKER_SHUTDOWN_DRAIN_MS: ${WORKER_SHUTDOWN_DRAIN_MS:-600000}
       # Empty is allowed here: it means "keep every review".
       REVIEW_RETENTION_DAYS: ${REVIEW_RETENTION_DAYS:-}
     depends_on:

@@ -107,7 +107,7 @@ const MAX_REDIRECTS = 3;
 
 // Generous enough for a slow self-hosted forge, tight enough that a hung run
 // is failed and collected well before the worker's own 30-minute ceiling.
-const FORGE_TIMEOUT_MS = 30_000;
+export const FORGE_TIMEOUT_MS = 30_000;
 
 // The primary limit shows in x-ratelimit-remaining; GitHub's secondary limits
 // send retry-after, or sometimes only say so in the message.
