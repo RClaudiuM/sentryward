@@ -268,19 +268,29 @@ describe("GitHubAdapter", () => {
     expect(calls).toHaveLength(2);
   });
 
-  it("creates a repository hook and tolerates deleting one that is gone", async () => {
+  it("finds a repository hook by callback URL, creates one and tolerates deleting one that is gone", async () => {
     const repo = { externalId: "9", fullPath: "acme/web" };
     const { adapter: gh, calls } = adapter([
-      { method: "POST", url: /\/repos\/acme\/web\/hooks$/, body: { id: 77 } },
-      { method: "DELETE", url: /\/repos\/acme\/web\/hooks\/77$/, status: 404, body: { message: "Not Found" } },
+      {
+        url: /\/repos\/acme\/web\/hooks\?per_page=100$/,
+        body: [{ id: 70, config: { url: "https://elsewhere.example.com/hook" } }],
+        headers: { link: '<https://api.github.com/repos/acme/web/hooks?per_page=100&page=2>; rel="next"' },
+      },
+      {
+        url: /\/repos\/acme\/web\/hooks\?per_page=100&page=2$/,
+        body: [{ id: 77, config: { url: "https://sentryward.example.com/hook" } }],
+      },
+      { method: "POST", url: /\/repos\/acme\/web\/hooks$/, body: { id: 78 } },
+      { method: "DELETE", url: /\/repos\/acme\/web\/hooks\/78$/, status: 404, body: { message: "Not Found" } },
     ]);
 
-    expect(await gh.createHook(repo, "https://sentryward.example.com/hook", "s3cret")).toBe("77");
-    expect(JSON.parse(calls[0]!.body!)).toMatchObject({
+    expect(await gh.findHook(repo, "https://sentryward.example.com/hook")).toBe("77");
+    expect(await gh.createHook(repo, "https://sentryward.example.com/hook", "s3cret")).toBe("78");
+    expect(JSON.parse(calls[2]!.body!)).toMatchObject({
       events: ["pull_request", "issue_comment", "pull_request_review_comment"],
       config: { url: "https://sentryward.example.com/hook", secret: "s3cret", content_type: "json" },
     });
-    await expect(gh.deleteHook(repo, "77")).resolves.toBeUndefined();
+    await expect(gh.deleteHook(repo, "78")).resolves.toBeUndefined();
   });
 
   it("reads a thread's root comment and replies in the thread", async () => {
@@ -532,6 +542,28 @@ describe("GitLabAdapter", () => {
     const stub = fetchStub(routes);
     return { ...stub, adapter: new GitLabAdapter({ host, token: async () => "glpat", fetch: stub.fetch }) };
   };
+
+  it("finds a project hook by callback URL across pages", async () => {
+    const repo = { externalId: "9", fullPath: "acme/web" };
+    const { adapter: gl, calls } = adapter([
+      {
+        url: /\/projects\/9\/hooks\?per_page=100$/,
+        body: [{ id: 70, url: "https://elsewhere.example.com/hook" }],
+        headers: { "x-next-page": "2" },
+      },
+      {
+        url: /\/projects\/9\/hooks\?per_page=100&page=2$/,
+        body: [{ id: 77, url: "https://sentryward.example.com/hook" }],
+      },
+      { method: "POST", url: /\/projects\/9\/hooks$/, body: { id: 78 } },
+      { method: "DELETE", url: /\/projects\/9\/hooks\/78$/, status: 404, body: { message: "Not Found" } },
+    ]);
+
+    expect(await gl.findHook(repo, "https://sentryward.example.com/hook")).toBe("77");
+    expect(await gl.createHook(repo, "https://sentryward.example.com/hook", "s3cret")).toBe("78");
+    expect(JSON.parse(calls[2]!.body!)).toMatchObject({ url: "https://sentryward.example.com/hook", token: "s3cret" });
+    await expect(gl.deleteHook(repo, "78")).resolves.toBeUndefined();
+  });
 
   it("reads a merge request's head and base, falling back to its target branch", async () => {
     let refs: unknown = { base_sha: "b", start_sha: "s", head_sha: "h" };

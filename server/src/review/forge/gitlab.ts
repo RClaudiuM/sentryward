@@ -108,6 +108,11 @@ interface GlJob {
   artifacts?: { file_type: string }[];
 }
 
+interface GlHook {
+  id: number;
+  url: string;
+}
+
 // The reports Sentryward reads, by artifact type, and where GitLab's own CI
 // templates write them. The jobs API serves files from a job's artifacts
 // archive only, so a report declared under artifacts:reports alone (and not
@@ -653,6 +658,12 @@ export class GitLabAdapter implements ForgeAdapter, ForgePublisher, ForgeHooks, 
       }),
     });
     return String(hook.id);
+  }
+
+  async findHook(repo: HookTarget, url: string): Promise<string | null> {
+    const hooks = await this.http.paginate<GlHook>(`${this.project(repo.externalId)}/hooks?per_page=100`, nextPage);
+    const hook = hooks.find((candidate) => candidate.url === url);
+    return hook ? String(hook.id) : null;
   }
 
   async deleteHook(repo: HookTarget, hookId: string): Promise<void> {

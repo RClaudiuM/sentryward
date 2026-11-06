@@ -110,6 +110,11 @@ interface GhCheckRun {
   output: { annotations_count: number };
 }
 
+interface GhHook {
+  id: number;
+  config: { url?: string };
+}
+
 // A commit rarely has more than a few dozen check runs.
 const MAX_CHECK_RUN_PAGES = 3;
 
@@ -691,6 +696,15 @@ export class GitHubAdapter implements ForgeAdapter, ForgePublisher, ForgeHooks, 
       }),
     });
     return String(hook.id);
+  }
+
+  async findHook(repo: HookTarget, url: string): Promise<string | null> {
+    const hooks = await this.http.paginate<GhHook>(
+      `${repoApiPath(repo.fullPath)}/hooks?per_page=100`,
+      linkHeaderNext,
+    );
+    const hook = hooks.find((candidate) => candidate.config.url === url);
+    return hook ? String(hook.id) : null;
   }
 
   async deleteHook(repo: HookTarget, hookId: string): Promise<void> {

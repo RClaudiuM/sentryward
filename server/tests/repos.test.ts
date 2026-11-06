@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { app } from "../src/app.ts";
 import { decrypt, encrypt } from "../src/lib/crypto.ts";
 import { prisma } from "../src/lib/prisma.ts";
+import { ensureWebhook, webhookUrl } from "../src/services/webhooks.ts";
 import { fetchStub } from "./helpers/fetchStub.ts";
 import { addMember, createTeam, createUser, inWorkspace } from "./helpers/users.ts";
 
@@ -754,6 +755,179 @@ describe("GET /api/config/schema", () => {
     expect(res.body.contextWindows.anthropic).toBe(200_000);
     expect(res.body.defaultContextWindow).toBe(128_000);
     expect(res.body.thinkingBudgets).toEqual({ off: 0, low: 2_000, medium: 8_000, high: 24_000 });
+  });
+});
+
+describe.each(["gitlab", "github"] as const)("%s webhook registration claims", (provider) => {
+  function sentSecret(body: string): string {
+    const hook = JSON.parse(body);
+    return provider === "gitlab" ? hook.token : hook.config.secret;
+  }
+
+  function listedHook(id: number, url: string) {
+    return provider === "gitlab" ? { id, url } : { id, config: { url } };
+  }
+
+  async function setup() {
+    const original = await prisma.forgeConnection.findUniqueOrThrow({ where: { id: connectionId } });
+    const connection = provider === "gitlab" ? original : await prisma.forgeConnection.create({
+      data: {
+        workspaceId: original.workspaceId,
+        provider,
+        host: "github.com",
+        kind: "token",
+        accountLogin: "dev",
+        encryptedToken: encrypt("ghp"),
+      },
+    });
+    const repo = await prisma.repository.create({
+      data: {
+        connectionId: connection.id,
+        provider,
+        host: connection.host,
+        fullPath: "team/web",
+        externalId: "1",
+        defaultBranch: "main",
+      },
+    });
+    return { repo, connection };
+  }
+
+  it("creates one hook when enable requests overlap and reuses it with stale repository data", async () => {
+    const { repo, connection } = await setup();
+    let signalStarted!: () => void;
+    let releaseHook!: () => void;
+    const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const released = new Promise<void>((resolve) => { releaseHook = resolve; });
+    const stub = fetchStub([{ method: "POST", url: /\/hooks$/, body: { id: 314 } }]);
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof stub.fetch>) => {
+      const response = await stub.fetch(...args);
+      signalStarted();
+      await released;
+      return response;
+    });
+
+    const first = request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ enabled: true }).then((res) => res);
+    let pendingSecret: string | null;
+    try {
+      await started;
+      const pending = await prisma.repository.findUniqueOrThrow({ where: { id: repo.id } });
+      pendingSecret = pending.encryptedWebhookSecret;
+      expect(pending.webhookId).toBeNull();
+      expect(pendingSecret).not.toBeNull();
+
+      const second = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ enabled: true });
+      expect(second.status).toBe(200);
+      expect(second.body.repo.enabled).toBe(true);
+      expect(second.body.webhook).toEqual({
+        active: false,
+        error: "Webhook registration is already in progress; try again shortly.",
+      });
+      expect(stub.calls).toHaveLength(1);
+    } finally {
+      releaseHook();
+      await first;
+    }
+
+    expect((await first).body.webhook).toEqual({ active: true });
+    const stored = await prisma.repository.findUniqueOrThrow({ where: { id: repo.id } });
+    const hook = JSON.parse(stub.calls[0]!.body!);
+    expect(stored.webhookId).toBe("314");
+    expect(stored.encryptedWebhookSecret).toBe(pendingSecret!);
+    expect(decrypt(stored.encryptedWebhookSecret!)).toBe(provider === "gitlab" ? hook.token : hook.config.secret);
+    expect(await ensureWebhook(repo, connection)).toEqual({ active: true });
+    expect(await ensureWebhook(stored, connection)).toEqual({ active: true });
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("keeps a refused registration claim so the next enable can reconcile and retry", async () => {
+    const { repo } = await setup();
+    const stub = fetchStub([
+      { method: "POST", url: /\/hooks$/, status: 403, body: { message: "Forbidden" }, times: 1 },
+      { url: /\/hooks\?per_page=100$/, body: [] },
+      { method: "POST", url: /\/hooks$/, body: { id: 314 } },
+    ]);
+    vi.stubGlobal("fetch", stub.fetch);
+
+    const failed = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ enabled: true });
+    expect(failed.status).toBe(200);
+    expect(failed.body.webhook.active).toBe(false);
+    expect(failed.body.webhook.error).toMatch(/Automatic reviews are off/);
+    const pending = await prisma.repository.findUniqueOrThrow({ where: { id: repo.id } });
+    expect(pending).toMatchObject({
+      webhookId: null,
+      enabled: true,
+    });
+    expect(pending.encryptedWebhookSecret).not.toBeNull();
+
+    const retry = await request(app).patch(`/api/repos/${repo.id}`).set("Cookie", cookie).send({ enabled: true });
+    expect(retry.status).toBe(200);
+    expect(retry.body.webhook).toEqual({ active: true });
+    expect(stub.calls.map((call) => call.method)).toEqual(["POST", "GET", "POST"]);
+    const stored = await prisma.repository.findUniqueOrThrow({ where: { id: repo.id } });
+    expect(stored.webhookId).toBe("314");
+    expect(decrypt(stored.encryptedWebhookSecret!)).toBe(sentSecret(stub.calls[0]!.body!));
+    expect(sentSecret(stub.calls[2]!.body!)).toBe(sentSecret(stub.calls[0]!.body!));
+  });
+
+  it("recovers an abandoned claim before creating the forge hook", async () => {
+    const { repo, connection } = await setup();
+    const claimedSecret = "claimed-secret";
+    await prisma.repository.update({
+      where: { id: repo.id },
+      data: { encryptedWebhookSecret: encrypt(claimedSecret) },
+    });
+    const stub = fetchStub([
+      { url: /\/hooks\?per_page=100$/, body: [] },
+      { method: "POST", url: /\/hooks$/, body: { id: 314 } },
+    ]);
+    vi.stubGlobal("fetch", stub.fetch);
+
+    expect(await ensureWebhook(repo, connection)).toEqual({ active: true });
+    expect(stub.calls.map((call) => call.method)).toEqual(["GET", "POST"]);
+    expect(sentSecret(stub.calls[1]!.body!)).toBe(claimedSecret);
+    expect(await prisma.repository.findUniqueOrThrow({ where: { id: repo.id } })).toMatchObject({ webhookId: "314" });
+  });
+
+  it("does not clear a claim replaced while forge creation was failing", async () => {
+    const { repo, connection } = await setup();
+    const replacement = encrypt("replacement-secret");
+    const stub = fetchStub([{ method: "POST", url: /\/hooks$/, status: 403, body: { message: "Forbidden" } }]);
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof stub.fetch>) => {
+      await prisma.repository.update({ where: { id: repo.id }, data: { encryptedWebhookSecret: replacement } });
+      return stub.fetch(...args);
+    });
+
+    expect((await ensureWebhook(repo, connection)).active).toBe(false);
+    const stored = await prisma.repository.findUniqueOrThrow({ where: { id: repo.id } });
+    expect(stored.encryptedWebhookSecret).toBe(replacement);
+  });
+
+  it("reconciles the created hook after saving its id fails", async () => {
+    const { repo, connection } = await setup();
+    const url = webhookUrl(provider, repo.id);
+    const stub = fetchStub([
+      { method: "POST", url: /\/hooks$/, body: { id: 314 } },
+      { url: /\/hooks\?per_page=100$/, body: [listedHook(314, url)] },
+    ]);
+    vi.stubGlobal("fetch", stub.fetch);
+    const updateMany = prisma.repository.updateMany.bind(prisma.repository);
+    const save = vi.spyOn(prisma.repository, "updateMany")
+      .mockImplementationOnce((args) => updateMany(args))
+      .mockRejectedValueOnce(new Error("Database unavailable"));
+    try {
+      await expect(ensureWebhook(repo, connection)).rejects.toThrow("Database unavailable");
+    } finally {
+      save.mockRestore();
+    }
+
+    const stored = await prisma.repository.findUniqueOrThrow({ where: { id: repo.id } });
+    const hook = JSON.parse(stub.calls[0]!.body!);
+    expect(stored.webhookId).toBeNull();
+    expect(decrypt(stored.encryptedWebhookSecret!)).toBe(provider === "gitlab" ? hook.token : hook.config.secret);
+    expect(await ensureWebhook(repo, connection)).toEqual({ active: true });
+    expect(stub.calls.map((call) => call.method)).toEqual(["POST", "GET"]);
+    expect(await prisma.repository.findUniqueOrThrow({ where: { id: repo.id } })).toMatchObject({ webhookId: "314" });
   });
 });
 
