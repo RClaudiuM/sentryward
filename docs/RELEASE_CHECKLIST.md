@@ -1,5 +1,19 @@
 # Release handoff
 
+From the release after 0.4.0, pushing the `vX.Y.Z` tag also publishes the
+GitHub release: the `release` job in `.github/workflows/release-image.yml`
+runs after the image push and uses the tag's `CHANGELOG.md` section as the
+notes, followed by the section's compare link. The job fails if that section
+is missing, or if a draft release for the tag already exists (publish or
+delete the draft, then rerun the job). Latest goes only to the highest stable
+tag, so a backport does not take it; the image's `latest` tag still moves on
+every stable tag.
+
+For future releases, replace the final "Publish a stable GitHub release"
+publication step with: verify the GitHub release was published from the
+changelog section, with its upgrade notes and the right Latest or pre-release
+marking. The first full check of this job is the next real tag push.
+
 ## 0.4.0 preparation (2026-11-07)
 
 Release metadata is prepared for `v0.4.0`. Both package manifests and
