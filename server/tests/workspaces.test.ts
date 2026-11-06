@@ -321,6 +321,64 @@ describe("deleting accounts", () => {
     expect(await prisma.workspace.count({ where: { id: teamId } })).toBe(1);
   });
 
+  it("does not remove the forge hook when a team deletion is refused for lacking another owner", async () => {
+    await prisma.repository.update({
+      where: { id: repoId },
+      data: { webhookId: "500", encryptedWebhookSecret: encrypt("secret") },
+    });
+    const stub = fetchStub([]);
+    vi.stubGlobal("fetch", stub.fetch);
+    const { hashPassword } = await import("../src/lib/password.ts");
+    await prisma.user.update({ where: { id: owner.user.id }, data: { passwordHash: await hashPassword("pw") } });
+
+    const res = await request(app).delete("/api/settings/account").set("Cookie", owner.cookie).send({ password: "pw" });
+
+    expect(res.status).toBe(409);
+    expect(stub.calls).toEqual([]);
+    expect(await prisma.workspace.count({ where: { id: teamId } })).toBe(1);
+    expect((await prisma.repository.findUniqueOrThrow({ where: { id: repoId } })).webhookId).toBe("500");
+  });
+
+  it("does not remove the forge hook when deleting the last admin is refused", async () => {
+    await prisma.user.update({ where: { id: owner.user.id }, data: { role: "admin" } });
+    const connection = await prisma.forgeConnection.create({
+      data: {
+        workspaceId: owner.workspace.id,
+        createdById: owner.user.id,
+        provider: "gitlab",
+        host: "gitlab.com",
+        kind: "token",
+        accountLogin: "owner",
+        encryptedToken: encrypt("glpat"),
+      },
+    });
+    await prisma.repository.create({
+      data: {
+        connectionId: connection.id,
+        provider: "gitlab",
+        host: "gitlab.com",
+        fullPath: "owner/solo",
+        externalId: "9",
+        defaultBranch: "main",
+        enabled: true,
+        webhookId: "500",
+        encryptedWebhookSecret: encrypt("secret"),
+      },
+    });
+    const stub = fetchStub([]);
+    vi.stubGlobal("fetch", stub.fetch);
+    const { hashPassword } = await import("../src/lib/password.ts");
+    await prisma.user.update({ where: { id: owner.user.id }, data: { passwordHash: await hashPassword("pw") } });
+
+    const res = await request(app).delete("/api/settings/account").set("Cookie", owner.cookie).send({ password: "pw" });
+
+    expect(res.status).toBe(409);
+    expect(stub.calls).toEqual([]);
+    expect(
+      (await prisma.repository.findFirstOrThrow({ where: { connectionId: connection.id } })).webhookId,
+    ).toBe("500");
+  });
+
   it("deletes a team along with its only member", async () => {
     await prisma.membership.deleteMany({ where: { userId: member.user.id, workspaceId: teamId } });
     const { hashPassword } = await import("../src/lib/password.ts");
