@@ -8,6 +8,12 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- Pushing a release tag now publishes the GitHub release automatically from
+  the tag's changelog section, after the multi-arch image is pushed to GHCR.
+  Stable tags are marked Latest; pre-release tags are marked as pre-releases.
+
 ## [0.4.0] - 2026-11-07
 
 Sentryward remains pre-1.0, and this release changes some default behaviour:
