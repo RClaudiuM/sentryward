@@ -14,6 +14,12 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   the tag's changelog section, after the multi-arch image is pushed to GHCR.
   Stable tags are marked Latest; pre-release tags are marked as pre-releases.
 
+### Fixed
+
+- `GET /api/reviews` answers `400 Validation failed` instead of
+  `500 Internal server error` when the `number` filter is above 2147483647,
+  the largest change number the database can store (#261).
+
 ## [0.4.0] - 2026-11-07
 
 Sentryward remains pre-1.0, and this release changes some default behaviour:

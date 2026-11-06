@@ -15,7 +15,9 @@ export const listReviewsQuerySchema = z.object({
   status: z.enum(["queued", "running", "completed", "partial", "failed", "superseded", "skipped", "cancelled"]).optional(),
   verdict: z.enum(["pass", "blocked", "error"]).optional(),
   trigger: z.enum(["manual", "webhook", "comment"]).optional(),
-  number: z.coerce.number().int().min(1).optional(),
+  // review_jobs.number is a Postgres integer; anything larger makes Prisma throw
+  // and the request would end as a 500 instead of a validation error.
+  number: z.coerce.number().int().min(1).max(2_147_483_647).optional(),
   q: z.string().trim().max(200).optional(),
   // Superseded runs never reached a model; they are noise unless asked for.
   includeSuperseded: z.stringbool().default(false),

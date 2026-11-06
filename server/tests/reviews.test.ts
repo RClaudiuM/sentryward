@@ -205,6 +205,15 @@ describe("GET /api/reviews filters", () => {
     expect(numbers(await get("number=1"))).toEqual([1]);
   });
 
+  it("rejects a number above the integer range instead of failing", async () => {
+    expect((await get("number=2147483647")).status).toBe(200);
+    for (const query of ["number=2147483648", "number=2147483648&view=changes", "number=99999999999"]) {
+      const res = await get(query);
+      expect(res.status, query).toBe(400);
+      expect(res.body.errors).toHaveProperty("number");
+    }
+  });
+
   it("searches the repository path, the title and a change number", async () => {
     await completedJob(12);
     await job({ number: 3 });
