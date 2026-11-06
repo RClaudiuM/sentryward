@@ -156,8 +156,8 @@ function bucketSummary(bucket: Bucket, count: number): string {
   return `<summary>${BUCKET_ICON[bucket]} ${BUCKET_TITLE[bucket]} (${count})</summary>`;
 }
 
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? "" : "s"}`;
+function plural(count: number, word: string, words = `${word}s`): string {
+  return `${count} ${count === 1 ? word : words}`;
 }
 
 export function fence(code: string, language = ""): string {
@@ -443,7 +443,7 @@ function lifecycleSection(result: ReviewResult): string[] {
 
 function footer(result: ReviewResult): string {
   const models = [...new Set(result.usage.map((u) => u.model))].join(", ") || "no model call";
-  const passes = plural(result.coverage.passes, "review pass");
+  const passes = plural(result.coverage.passes, "review pass", "review passes");
   const refuted = result.validation.dropped.refuted ?? 0;
   const verification = refuted ? ` · ${plural(refuted, "finding")} refuted on verification` : "";
   const commits = result.incremental
