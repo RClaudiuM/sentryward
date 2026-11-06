@@ -19,6 +19,7 @@ import {
   recordTitle,
   recoverStale,
   releaseLease,
+  requeueInterrupted,
 } from "../src/worker/queue.ts";
 
 let repositoryId: string;
@@ -421,6 +422,66 @@ describe("recoverStale", () => {
     await claimNext();
 
     expect((await recoverStale(15 * 60 * 1000, 3)).count).toBe(0);
+  });
+});
+
+describe("requeueInterrupted", () => {
+  it("queues a job cut off by shutdown again without using an attempt", async () => {
+    const queued = await job("aaa");
+    const claimed = await claimNext();
+    expect(claimed?.attempts).toBe(1);
+
+    expect(await requeueInterrupted([{ id: queued.id, attempts: 1 }])).toBe(1);
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: queued.id } })).toMatchObject({
+      status: "queued",
+      attempts: 0,
+      lockedAt: null,
+      leaseExpiresAt: null,
+    });
+
+    // Claimable at once: no wait for the lease or for stale-lock recovery.
+    const retried = await claimNext();
+    expect(retried?.id).toBe(queued.id);
+    expect(retried?.attempts).toBe(1);
+  });
+
+  it("supersedes a job whose change has a newer head", async () => {
+    const older = await job("aaa");
+    await claimNext();
+    await job("bbb");
+
+    expect(await requeueInterrupted([{ id: older.id, attempts: 1 }])).toBe(1);
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: older.id } })).toMatchObject({
+      status: "superseded",
+      attempts: 1,
+      leaseExpiresAt: null,
+    });
+  });
+
+  it("leaves a job that finished, was cancelled or is held by another attempt", async () => {
+    const done = await job("aaa", 1);
+    const cancelled = await job("bbb", 2);
+    const other = await job("ccc", 3);
+    await claimNext();
+    await claimNext();
+    await claimNext();
+    await complete(done.id, 1, { status: "completed", verdict: "pass" });
+    const { workspaceId } = await prisma.forgeConnection.findFirstOrThrow();
+    await cancelJob(cancelled.id, workspaceId, "Review cancelled");
+
+    expect(
+      await requeueInterrupted([
+        { id: done.id, attempts: 1 },
+        { id: cancelled.id, attempts: 1 },
+        { id: other.id, attempts: 2 },
+      ]),
+    ).toBe(0);
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: done.id } })).status).toBe("completed");
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: cancelled.id } })).status).toBe("cancelled");
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: other.id } })).toMatchObject({
+      status: "running",
+      attempts: 1,
+    });
   });
 });
 

@@ -2,13 +2,16 @@ import { env } from "../config/env.ts";
 import { prisma } from "../lib/prisma.ts";
 import { notifyJob } from "../services/notifications.ts";
 import { execute } from "./execute.ts";
-import { claimNext, recoverStale } from "./queue.ts";
+import { claimNext, recoverStale, requeueInterrupted } from "./queue.ts";
 import { claimNextReply, recoverStaleReplies } from "./replyQueue.ts";
 import { executeReply } from "./executeReply.ts";
 import { runRetention } from "./retention.ts";
 
 let stopping = false;
 const running = new Set<Promise<void>>();
+// Review jobs in flight and the attempt each holds, so a shutdown that cannot
+// wait for them can hand them back to the queue.
+const inFlight = new Map<string, number>();
 
 // Retention is about days, so an hourly pass is plenty. The first poll after
 // start runs it.
@@ -33,7 +36,11 @@ async function tick(): Promise<void> {
     if (!job) {
       break;
     }
-    const task: Promise<void> = execute(job).finally(() => running.delete(task));
+    inFlight.set(job.id, job.attempts);
+    const task: Promise<void> = execute(job).finally(() => {
+      running.delete(task);
+      inFlight.delete(job.id);
+    });
     running.add(task);
   }
   while (!stopping && running.size < env.WORKER_CONCURRENCY) {
@@ -65,6 +72,41 @@ async function prune(): Promise<void> {
   }
 }
 
+// A review may run for up to WORKER_MAX_RUN_MS, longer than a deploy should
+// wait, and a worker killed mid-run leaves its jobs running until stale-lock
+// recovery retries them on a fresh attempt. So in-flight work gets
+// WORKER_SHUTDOWN_DRAIN_MS to finish, and reviews still running after that are
+// handed back to the queue and the process exits at once: requeueInterrupted
+// returns their attempt, which is only safe once their runs can no longer
+// write. Replies are short and are only drained; one cut off by the container
+// stop falls to stale recovery as before.
+async function drain(): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), env.WORKER_SHUTDOWN_DRAIN_MS);
+  });
+  const outcome = await Promise.race([Promise.allSettled(running), deadline]);
+  clearTimeout(timer);
+  if (outcome !== "timeout") return;
+  if (inFlight.size === 0) {
+    // Only replies left: nothing to hand back, so let them finish.
+    await Promise.allSettled(running);
+    return;
+  }
+
+  const jobs = [...inFlight].map(([id, attempts]) => ({ id, attempts }));
+  try {
+    const requeued = await requeueInterrupted(jobs);
+    console.log(`[worker] requeued ${requeued} of ${jobs.length} unfinished review(s)`);
+  } catch (err) {
+    // Left running; stale-lock recovery retries them later.
+    console.error("[worker] could not requeue unfinished reviews", err);
+  }
+  await prisma.$disconnect().catch(() => undefined);
+  console.log("[worker] stopped");
+  process.exit(0);
+}
+
 async function loop(): Promise<void> {
   console.log(
     `[worker] polling every ${env.WORKER_POLL_INTERVAL_MS}ms, concurrency ${env.WORKER_CONCURRENCY}`,
@@ -82,14 +124,16 @@ async function loop(): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, env.WORKER_POLL_INTERVAL_MS));
   }
-  await Promise.allSettled(running);
+  await drain();
   await prisma.$disconnect();
   console.log("[worker] stopped");
 }
 
 function shutdown() {
   if (!stopping) {
-    console.log("[worker] shutting down after in-flight jobs");
+    console.log(
+      `[worker] shutting down; waiting up to ${env.WORKER_SHUTDOWN_DRAIN_MS}ms for in-flight jobs`,
+    );
     stopping = true;
   }
 }

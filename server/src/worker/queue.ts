@@ -407,3 +407,39 @@ export async function recoverStale(
   }
   return { count: recovered + failed.length, failedIds: failed.map((job) => job.id) };
 }
+
+// A stopping worker hands back the reviews it could not finish within its
+// drain time, so a deploy neither leaves them running until recoverStale's
+// timeout nor spends one of their attempts. The attempt is handed back too,
+// which means the next claim reuses this run's attempt number and so passes
+// its fences (complete, claimState, heartbeat): that is only safe because the
+// caller exits the process straight after, before the abandoned run can write
+// again. The lease goes with it so the change can be claimed at once. Scoped to
+// the running attempt, so a job that finished, failed on its time limit or was
+// cancelled meanwhile keeps that outcome; one whose change has a newer job is
+// superseded instead, as in recoverStale. Returns how many jobs were handed back.
+export async function requeueInterrupted(jobs: { id: string; attempts: number }[]): Promise<number> {
+  let requeued = 0;
+  for (const { id, attempts } of jobs) {
+    requeued += await prisma.$transaction(async (tx) => {
+      const job = await tx.reviewJob.findUnique({
+        where: { id },
+        select: { repositoryId: true, number: true, createdAt: true },
+      });
+      if (!job) return 0;
+      await lockEnqueue(tx, job.repositoryId, job.number);
+      const newer = await tx.reviewJob.findFirst({
+        where: { repositoryId: job.repositoryId, number: job.number, createdAt: { gt: job.createdAt } },
+        select: { id: true },
+      });
+      const { count } = await tx.reviewJob.updateMany({
+        where: { id, attempts, status: "running" },
+        data: newer
+          ? { status: "superseded", lockedAt: null, leaseExpiresAt: null, finishedAt: new Date() }
+          : { status: "queued", attempts: { decrement: 1 }, lockedAt: null, leaseExpiresAt: null },
+      });
+      return count;
+    });
+  }
+  return requeued;
+}
