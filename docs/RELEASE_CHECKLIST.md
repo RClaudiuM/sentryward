@@ -1,5 +1,43 @@
 # Release handoff
 
+## 0.4.0 preparation (2026-11-07)
+
+Release metadata is prepared for `v0.4.0`. Both package manifests and
+lockfile root entries use `0.4.0`, and the production env example and README
+pin it. The changelog's `0.4.0` section has the release notes, upgrade notes
+(team membership consent, invite-only registration and
+`WORKER_SHUTDOWN_DRAIN_MS`) and comparison link. It also now covers changes
+merged without a changelog entry: #206, #207, #211, #212, webhook
+registration reconciliation, the concurrent registration 409 and the header
+GitHub link.
+
+### Verification
+
+- Server: 1370 tests pass, type check passes, and Prisma schema
+  validation passes.
+- Client: 557 tests pass with `--maxWorkers=2`; type check, lint and
+  production build pass. Lint reports the same two Fast Refresh warnings in
+  `AuthProvider.tsx` as 0.3.0, and the build reports the same chunk-size warning.
+- The production Compose file renders with `.env.production.example` (and
+  placeholder secrets), using image `ghcr.io/rdlugs/sentryward:0.4.0` and
+  passing `WORKER_SHUTDOWN_DRAIN_MS` to the worker.
+- Dependency audits: server reports zero findings with and without dev
+  dependencies. Client reports zero runtime findings and the same eight in
+  development tooling as 0.3.0 (one high, five moderate, two low), all outside
+  the browser bundle.
+- Not performed: a production image build, an upgrade from a 0.3.0 database, a
+  browser walkthrough, a live forge/model review, or hosted CI on the
+  preparation commit.
+
+### Publication steps
+
+- [ ] Authorize staging and committing the preparation changes.
+- [ ] Push the approved commit and obtain passing hosted CI for it.
+- [ ] Create and push `v0.4.0` on that verified commit.
+- [ ] Verify both architecture images are published to GHCR and `latest` moved.
+- [ ] Publish a stable GitHub release using the `0.4.0` changelog section,
+  including its upgrade notes.
+
 ## 0.3.0 preparation (2026-10-31)
 
 Release metadata is prepared for `v0.3.0`. Both package manifests and
