@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma.ts";
-import { hashPassword, verifyPassword } from "../lib/password.ts";
+import { dummyPasswordHash, hashPassword, verifyPassword } from "../lib/password.ts";
 import { AUTH_COOKIE, authCookieOptions, signToken } from "../lib/jwt.ts";
 import { HttpError } from "../lib/httpError.ts";
 import { env } from "../config/env.ts";
@@ -80,6 +80,10 @@ export async function register(req: Request, res: Response) {
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
+    // Deliberate trade-off: this 409 is the one remaining place that confirms an
+    // email has an account (login and password reset answer the same either way).
+    // We keep it because a clear "already registered" message is much better UX
+    // on signup, and authLimiter caps probing to a handful of attempts per IP.
     throw emailTaken();
   }
 
@@ -120,7 +124,10 @@ export async function login(req: Request, res: Response) {
   const { email, password } = loginSchema.parse(req.body);
 
   const user = await prisma.user.findUnique({ where: { email } });
-  if (!user || !(await verifyPassword(user.passwordHash, password))) {
+  // Exactly one argon2 verify runs whether or not the email has an account, so
+  // response time cannot be used to enumerate accounts.
+  const passwordOk = await verifyPassword(user?.passwordHash ?? (await dummyPasswordHash()), password);
+  if (!user || !passwordOk) {
     throw new HttpError(401, "Invalid email or password");
   }
 
