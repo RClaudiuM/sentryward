@@ -3,6 +3,7 @@ import { HttpError } from "../lib/httpError.ts";
 import { atLeast } from "../lib/workspaceRoles.ts";
 import { prisma } from "../lib/prisma.ts";
 import type { Prisma, WorkspaceRole } from "../generated/prisma/client.ts";
+import { removeWebhook } from "./webhooks.ts";
 
 export const WORKSPACE_HEADER = "x-sentryward-workspace";
 
@@ -127,5 +128,43 @@ export async function releaseWorkspaces(
       throw new HttpError(409, `Make someone else an owner of ${team.workspace.name} before deleting your account`);
     }
     await tx.membership.update({ where: { id: others[0]!.id }, data: { role: "owner" } });
+  }
+}
+
+// Call before the transaction that deletes `userId`, while connection
+// credentials are still live. Their personal workspace, and any team where
+// they are the only member, are about to cascade-delete (see
+// `releaseWorkspaces`); this takes Sentryward's hooks off those repos first,
+// best effort, the same way `deleteWorkspace` does for a single workspace.
+// Best effort because the transaction re-checks membership under lock and may
+// decide differently; removing a hook that turns out not to cascade is
+// harmless, unlike leaving one behind that does.
+export async function removeCascadingWebhooks(userId: string): Promise<void> {
+  const personal = await prisma.workspace.findUnique({
+    where: { personalOwnerId: userId },
+    select: { id: true },
+  });
+  const teams = await prisma.membership.findMany({
+    where: { userId, workspace: { personalOwnerId: null } },
+    select: { workspaceId: true },
+  });
+  const soleTeamIds: string[] = [];
+  for (const team of teams) {
+    const others = await prisma.membership.count({
+      where: { workspaceId: team.workspaceId, userId: { not: userId } },
+    });
+    if (others === 0) soleTeamIds.push(team.workspaceId);
+  }
+  const workspaceIds = personal ? [personal.id, ...soleTeamIds] : soleTeamIds;
+  if (workspaceIds.length === 0) return;
+
+  const connections = await prisma.forgeConnection.findMany({
+    where: { workspaceId: { in: workspaceIds } },
+    include: { repositories: true },
+  });
+  for (const connection of connections) {
+    for (const repo of connection.repositories) {
+      await removeWebhook(repo, connection).catch(() => undefined);
+    }
   }
 }

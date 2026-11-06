@@ -1,7 +1,9 @@
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "../src/app.ts";
+import { encrypt } from "../src/lib/crypto.ts";
 import { prisma } from "../src/lib/prisma.ts";
+import { fetchStub } from "./helpers/fetchStub.ts";
 import { addMember, createTeam, createUser, inWorkspace } from "./helpers/users.ts";
 
 type Created = Awaited<ReturnType<typeof createUser>>;
@@ -51,6 +53,10 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await prisma.$disconnect();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 const get = (who: Created, path: string, workspace = teamId) =>
@@ -369,5 +375,78 @@ describe("deleting accounts", () => {
     expect(statuses).toEqual([204, 204]);
     const promoted = await prisma.membership.findFirstOrThrow({ where: { workspaceId: teamId, userId: member.user.id } });
     expect(promoted.role).toBe("owner");
+  });
+
+  it("removes the forge hook on the personal workspace's repos when the account is deleted", async () => {
+    await prisma.membership.deleteMany({ where: { userId: member.user.id, workspaceId: teamId } });
+    const connection = await prisma.forgeConnection.create({
+      data: {
+        workspaceId: owner.workspace.id,
+        createdById: owner.user.id,
+        provider: "gitlab",
+        host: "gitlab.com",
+        kind: "token",
+        accountLogin: "owner",
+        encryptedToken: encrypt("glpat"),
+      },
+    });
+    await prisma.repository.create({
+      data: {
+        connectionId: connection.id,
+        provider: "gitlab",
+        host: "gitlab.com",
+        fullPath: "owner/solo",
+        externalId: "9",
+        defaultBranch: "main",
+        enabled: true,
+        webhookId: "500",
+        encryptedWebhookSecret: encrypt("secret"),
+      },
+    });
+    const stub = fetchStub([{ method: "DELETE", url: /\/api\/v4\/projects\/9\/hooks\/500$/, status: 204, body: "" }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    const { hashPassword } = await import("../src/lib/password.ts");
+    await prisma.user.update({ where: { id: owner.user.id }, data: { passwordHash: await hashPassword("pw") } });
+
+    const res = await request(app).delete("/api/settings/account").set("Cookie", owner.cookie).send({ password: "pw" });
+
+    expect(res.status).toBe(204);
+    expect(stub.calls.map((call) => call.method)).toEqual(["DELETE"]);
+  });
+
+  it("removes the forge hook on a team deleted along with its only member", async () => {
+    await prisma.membership.deleteMany({ where: { userId: member.user.id, workspaceId: teamId } });
+    const connection = await prisma.forgeConnection.create({
+      data: {
+        workspaceId: teamId,
+        createdById: owner.user.id,
+        provider: "gitlab",
+        host: "gitlab.com",
+        kind: "token",
+        accountLogin: "acme",
+        encryptedToken: encrypt("glpat"),
+      },
+    });
+    await prisma.repository.create({
+      data: {
+        connectionId: connection.id,
+        provider: "gitlab",
+        host: "gitlab.com",
+        fullPath: "acme/hooked",
+        externalId: "7",
+        defaultBranch: "main",
+        enabled: true,
+        webhookId: "700",
+        encryptedWebhookSecret: encrypt("secret"),
+      },
+    });
+    const stub = fetchStub([{ method: "DELETE", url: /\/api\/v4\/projects\/7\/hooks\/700$/, status: 204, body: "" }]);
+    vi.stubGlobal("fetch", stub.fetch);
+
+    const res = await request(app).delete(`/api/admin/users/${owner.user.id}`).set("Cookie", (await createUser("admin2@example.com", "admin")).cookie);
+
+    expect(res.status).toBe(204);
+    expect(await prisma.workspace.count({ where: { id: teamId } })).toBe(0);
+    expect(stub.calls.map((call) => call.method)).toEqual(["DELETE"]);
   });
 });
