@@ -3,6 +3,7 @@ import { HttpError } from "../lib/httpError.ts";
 import { atLeast } from "../lib/workspaceRoles.ts";
 import { prisma } from "../lib/prisma.ts";
 import type { Prisma, WorkspaceRole } from "../generated/prisma/client.ts";
+import { removeWebhook } from "./webhooks.ts";
 
 export const WORKSPACE_HEADER = "x-sentryward-workspace";
 
@@ -86,6 +87,8 @@ export async function assertAnotherOwnerRemains(
   }
 }
 
+export type CascadedConnection = Prisma.ForgeConnectionGetPayload<{ include: { repositories: true } }>;
+
 // Call inside the transaction that deletes `userId`. Their personal workspace
 // cascades with them, and so does any team where they are the only member. A
 // team that keeps members must keep an owner: a user deleting themselves has to
@@ -97,11 +100,16 @@ export async function assertAnotherOwnerRemains(
 // owners deleting their accounts at once each see the other and both go,
 // leaving the team ownerless. Teams are visited in id order so two deletions
 // sharing teams take the locks in the same order and cannot deadlock.
+//
+// Returns the forge connections of every workspace actually deleted, so the
+// caller can take Sentryward's hooks off those repos once the transaction
+// that deleted them has committed (see `removeWebhooksFor`).
 export async function releaseWorkspaces(
   tx: Prisma.TransactionClient,
   userId: string,
   { promoteSuccessor }: { promoteSuccessor: boolean },
-): Promise<void> {
+): Promise<CascadedConnection[]> {
+  const cascaded: CascadedConnection[] = [];
   const teams = await tx.membership.findMany({
     where: { userId, workspace: { personalOwnerId: null } },
     select: { workspaceId: true, role: true, workspace: { select: { name: true } } },
@@ -119,6 +127,12 @@ export async function releaseWorkspaces(
       select: { id: true, role: true },
     });
     if (others.length === 0) {
+      cascaded.push(
+        ...(await tx.forgeConnection.findMany({
+          where: { workspaceId: team.workspaceId },
+          include: { repositories: true },
+        })),
+      );
       await tx.workspace.delete({ where: { id: team.workspaceId } });
       continue;
     }
@@ -127,5 +141,37 @@ export async function releaseWorkspaces(
       throw new HttpError(409, `Make someone else an owner of ${team.workspace.name} before deleting your account`);
     }
     await tx.membership.update({ where: { id: others[0]!.id }, data: { role: "owner" } });
+  }
+  return cascaded;
+}
+
+// Call inside the transaction that deletes `userId`, before `tx.user.delete`
+// (which cascades their personal workspace away). Mirrors the team-connection
+// read in `releaseWorkspaces`, so the caller can clean up the personal
+// workspace's hooks alongside any deleted teams' once the transaction commits.
+export async function personalWorkspaceConnections(
+  tx: Prisma.TransactionClient,
+  userId: string,
+): Promise<CascadedConnection[]> {
+  const personal = await tx.workspace.findUnique({
+    where: { personalOwnerId: userId },
+    select: { id: true },
+  });
+  if (!personal) return [];
+  return tx.forgeConnection.findMany({
+    where: { workspaceId: personal.id },
+    include: { repositories: true },
+  });
+}
+
+// Call after the transaction that deleted these workspaces has committed,
+// with the connections `releaseWorkspaces`/`personalWorkspaceConnections`
+// returned. Best effort: a hook left behind only delivers events Sentryward
+// then ignores.
+export async function removeWebhooksFor(connections: CascadedConnection[]): Promise<void> {
+  for (const connection of connections) {
+    for (const repo of connection.repositories) {
+      await removeWebhook(repo, connection).catch(() => undefined);
+    }
   }
 }

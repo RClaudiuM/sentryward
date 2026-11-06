@@ -28,7 +28,7 @@ import { probeModel } from "../services/llmProbe.ts";
 import { auditedGenerate, recordSpent } from "../services/llmAudit.ts";
 import { checkModel, connectionTarget, policyFor, targetOf, type LlmTarget } from "../services/privacyPolicy.ts";
 import { assertEmailAvailable, emailTaken, isUniqueViolation } from "../services/users.ts";
-import { releaseWorkspaces } from "../services/workspaces.ts";
+import { personalWorkspaceConnections, releaseWorkspaces, removeWebhooksFor } from "../services/workspaces.ts";
 import { clearAuthCookie, publicUser, setAuthCookie } from "./auth.controller.ts";
 
 const SERVER_KEYS: Record<ProviderName, boolean> = {
@@ -340,13 +340,16 @@ export async function deleteApiKey(req: Request, res: Response) {
 export async function deleteAccount(req: Request, res: Response) {
   const { password } = deleteAccountSchema.parse(req.body);
   const user = await requirePassword(req.userId!, password, "password");
-  await prisma.$transaction(async (tx) => {
+  const cascaded = await prisma.$transaction(async (tx) => {
     if (user.role === "admin" && (await tx.user.count()) > 1) {
       await assertAnotherAdminRemains(tx, user.id);
     }
-    await releaseWorkspaces(tx, user.id, { promoteSuccessor: false });
+    const personal = await personalWorkspaceConnections(tx, user.id);
+    const teams = await releaseWorkspaces(tx, user.id, { promoteSuccessor: false });
     await tx.user.delete({ where: { id: user.id } });
+    return [...personal, ...teams];
   });
+  await removeWebhooksFor(cascaded);
   clearAuthCookie(res);
   res.status(204).end();
 }

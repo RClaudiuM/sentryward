@@ -111,6 +111,12 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   stopping before the next one starts, and if a worker dies mid-review the next
   review of that change starts within about three heartbeats (3 minutes by
   default). Closes #183.
+- Deleting an account no longer leaves its forge webhooks behind. Self-service
+  account deletion and an admin removing a user now take Sentryward's hooks
+  off the repositories of the personal workspace, and of any team where the
+  user was the only member, before those workspaces cascade-delete, the same
+  way deleting a workspace, connection or repository already does. Closes
+  #210.
 
 ## [0.3.0] - 2026-10-31
 

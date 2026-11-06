@@ -5,7 +5,7 @@ import { assertAnotherAdminRemains } from "../services/admins.ts";
 import { createInvite, publicInvite, resendInvite } from "../services/invites.ts";
 import { ADMIN_RESET_TTL_MS, createPasswordReset } from "../services/passwordResets.ts";
 import { assertEmailAvailable, emailTaken, isUniqueViolation } from "../services/users.ts";
-import { releaseWorkspaces } from "../services/workspaces.ts";
+import { personalWorkspaceConnections, releaseWorkspaces, removeWebhooksFor } from "../services/workspaces.ts";
 import type { Prisma } from "../generated/prisma/client.ts";
 import {
   createInviteSchema,
@@ -75,7 +75,7 @@ export async function deleteUser(req: Request, res: Response) {
     throw new HttpError(400, "Delete your own account from Settings");
   }
 
-  await prisma.$transaction(async (tx) => {
+  const cascaded = await prisma.$transaction(async (tx) => {
     const target = await tx.user.findUnique({ where: { id }, select: { role: true } });
     if (!target) {
       throw new HttpError(404, "User not found");
@@ -83,9 +83,12 @@ export async function deleteUser(req: Request, res: Response) {
     if (target.role === "admin") {
       await assertAnotherAdminRemains(tx, id);
     }
-    await releaseWorkspaces(tx, id, { promoteSuccessor: true });
+    const personal = await personalWorkspaceConnections(tx, id);
+    const teams = await releaseWorkspaces(tx, id, { promoteSuccessor: true });
     await tx.user.delete({ where: { id } });
+    return [...personal, ...teams];
   });
+  await removeWebhooksFor(cascaded);
   res.status(204).end();
 }
 
