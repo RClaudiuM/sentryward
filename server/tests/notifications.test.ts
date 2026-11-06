@@ -173,6 +173,40 @@ describe("notifyJob", () => {
     });
   });
 
+  it("escapes the title and the error in Slack messages, keeping its own link", async () => {
+    const stub = fetchStub([{ method: "POST", url: /hooks\.slack\.com/ }, { method: "POST", url: /hooks\.slack\.com/ }]);
+    vi.stubGlobal("fetch", stub.fetch);
+    await target("slack", ["failed", "blocked"], "https://hooks.slack.com/services/T/B/X");
+    const blocked = await prisma.reviewJob.create({
+      data: {
+        repositoryId,
+        number: 8,
+        headSha: "bbb",
+        trigger: "manual",
+        status: "completed",
+        verdict: "blocked",
+        summary: { ...summary, title: "<!channel> <https://evil.example|x> & co" },
+        finishedAt: new Date(),
+      },
+    });
+    const failed = await finishedJob("failed", "error", "<!here> model said <b>no</b>");
+
+    await notifyJob(blocked.id);
+    await notifyJob(failed.id);
+
+    const texts = stub.calls.map((call) => JSON.parse(call.body!).text as string);
+    expect(texts[0]).toBe(
+      `Review blocked: acme/web#8 "&lt;!channel&gt; &lt;https://evil.example|x&gt; &amp; co" - 3 findings <${env.CLIENT_ORIGIN}/reviews/${blocked.id}|View review>`,
+    );
+    expect(texts[1]).toBe(
+      `Review failed: acme/web#7 - &lt;!here&gt; model said &lt;b&gt;no&lt;/b&gt; <${env.CLIENT_ORIGIN}/reviews/${failed.id}|View review>`,
+    );
+    for (const text of texts) {
+      // The only mrkdwn token left is the link we build.
+      expect(text.match(/<[^>]*>/g)).toEqual([expect.stringMatching(/^<http[^|]+\|View review>$/)]);
+    }
+  });
+
   it("does not notify skipped or cancelled jobs", async () => {
     const stub = fetchStub([]);
     vi.stubGlobal("fetch", stub.fetch);

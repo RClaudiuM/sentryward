@@ -14,6 +14,12 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   the tag's changelog section, after the multi-arch image is pushed to GHCR.
   Stable tags are marked Latest; pre-release tags are marked as pre-releases.
 
+### Security
+
+- Slack notifications escape the change title, the repository path and a
+  failed review's error, so a pull request titled `<!channel>` no longer pings
+  the channel and `<url|text>` in a title no longer renders as a link (#247).
+
 ## [0.4.0] - 2026-11-07
 
 Sentryward remains pre-1.0, and this release changes some default behaviour:

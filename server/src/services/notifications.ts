@@ -72,16 +72,26 @@ const HEADLINES: Record<NotificationPayload["event"], string> = {
   test: "Test notification",
 };
 
-function describe(payload: NotificationPayload): string {
-  const change = `${payload.repository.fullPath}#${payload.change.number}`;
-  const title = payload.change.title ? ` "${payload.change.title}"` : "";
+// The change title, the repository path and a failed review's error come from
+// the forge, so anyone who can open a pull request controls them. `text` maps
+// each one before it goes into a message whose format gives them meaning.
+function describe(payload: NotificationPayload, text: (value: string) => string = (value) => value): string {
+  const change = `${text(payload.repository.fullPath)}#${payload.change.number}`;
+  const title = payload.change.title ? ` "${text(payload.change.title)}"` : "";
   const detail =
     payload.event === "failed"
-      ? payload.review.error ?? "no reason recorded"
+      ? text(payload.review.error ?? "no reason recorded")
       : payload.findings
         ? `${payload.findings.total} finding${payload.findings.total === 1 ? "" : "s"}`
         : "";
   return `${HEADLINES[payload.event]}: ${change}${title}${detail ? ` - ${detail}` : ""}`;
+}
+
+// Slack mrkdwn reads `<...>` as a link, a mention or a special command such as
+// `<!channel>`, so a title that contains one would ping the channel or show a
+// link that looks like ours. These are the three characters Slack documents.
+export function escapeSlack(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // "sha256=<hex>" over the exact body sent, as GitHub signs its webhooks.
@@ -127,7 +137,8 @@ export async function deliver(target: NotificationTarget, workspaceId: string, p
       return;
     }
     case "slack": {
-      const text = `${describe(payload)} <${payload.review.url}|View review>`;
+      // The trailing link is ours, so it stays unescaped.
+      const text = `${describe(payload, escapeSlack)} <${payload.review.url}|View review>`;
       await post(targetUrl(target), JSON.stringify({ text }));
       return;
     }
