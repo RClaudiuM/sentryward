@@ -1,5 +1,6 @@
 import { env } from "../config/env.ts";
 import { lockChange } from "../lib/changeLock.ts";
+import { FORGE_TIMEOUT_MS } from "../review/forge/http.ts";
 import { prisma } from "../lib/prisma.ts";
 import type { Prisma, Repository, ReviewJob, ReviewTrigger } from "../generated/prisma/client.ts";
 import { loadDashboardConfig } from "../review/config/load.ts";
@@ -408,38 +409,55 @@ export async function recoverStale(
   return { count: recovered + failed.length, failedIds: failed.map((job) => job.id) };
 }
 
+// How long a handed-back job stays unclaimable. Once the stopping worker has
+// exited, the only writes its abandoned runs can still make are forge requests
+// already sent, which end within the forge request timeout; the margin covers
+// the exit itself. The runs cannot extend it: their heartbeat is scoped to
+// their attempt, which the hand-back takes back. A superseded job keeps its
+// attempt, so a beat landing before the exit can only hold the change longer,
+// never free it early.
+const HANDBACK_LEASE_MS = FORGE_TIMEOUT_MS + 5_000;
+
 // A stopping worker hands back the reviews it could not finish within its
 // drain time, so a deploy neither leaves them running until recoverStale's
 // timeout nor spends one of their attempts. The attempt is handed back too,
 // which means the next claim reuses this run's attempt number and so passes
-// its fences (complete, claimState, heartbeat): that is only safe because the
-// caller exits the process straight after, before the abandoned run can write
-// again. The lease goes with it so the change can be claimed at once. Scoped to
+// its fences (complete, claimState, heartbeat). So the change keeps a short
+// lease (HANDBACK_LEASE_MS) instead of being freed: claimNext skips it until
+// the caller has exited and any forge call already in flight has landed, and
+// only then can the job, or a newer one for the change, be claimed. Scoped to
 // the running attempt, so a job that finished, failed on its time limit or was
 // cancelled meanwhile keeps that outcome; one whose change has a newer job is
-// superseded instead, as in recoverStale. Returns how many jobs were handed back.
+// superseded instead, as in recoverStale. Each job is handed back on its own,
+// so one that fails falls to recoverStale without holding back the rest.
+// Returns how many jobs were handed back.
 export async function requeueInterrupted(jobs: { id: string; attempts: number }[]): Promise<number> {
   let requeued = 0;
   for (const { id, attempts } of jobs) {
-    requeued += await prisma.$transaction(async (tx) => {
-      const job = await tx.reviewJob.findUnique({
-        where: { id },
-        select: { repositoryId: true, number: true, createdAt: true },
+    try {
+      requeued += await prisma.$transaction(async (tx) => {
+        const job = await tx.reviewJob.findUnique({
+          where: { id },
+          select: { repositoryId: true, number: true, createdAt: true },
+        });
+        if (!job) return 0;
+        await lockEnqueue(tx, job.repositoryId, job.number);
+        const newer = await tx.reviewJob.findFirst({
+          where: { repositoryId: job.repositoryId, number: job.number, createdAt: { gt: job.createdAt } },
+          select: { id: true },
+        });
+        const leaseExpiresAt = new Date(Date.now() + HANDBACK_LEASE_MS);
+        const { count } = await tx.reviewJob.updateMany({
+          where: { id, attempts, status: "running" },
+          data: newer
+            ? { status: "superseded", lockedAt: null, leaseExpiresAt, finishedAt: new Date() }
+            : { status: "queued", attempts: { decrement: 1 }, lockedAt: null, leaseExpiresAt },
+        });
+        return count;
       });
-      if (!job) return 0;
-      await lockEnqueue(tx, job.repositoryId, job.number);
-      const newer = await tx.reviewJob.findFirst({
-        where: { repositoryId: job.repositoryId, number: job.number, createdAt: { gt: job.createdAt } },
-        select: { id: true },
-      });
-      const { count } = await tx.reviewJob.updateMany({
-        where: { id, attempts, status: "running" },
-        data: newer
-          ? { status: "superseded", lockedAt: null, leaseExpiresAt: null, finishedAt: new Date() }
-          : { status: "queued", attempts: { decrement: 1 }, lockedAt: null, leaseExpiresAt: null },
-      });
-      return count;
-    });
+    } catch (err) {
+      console.error(`[worker] could not requeue job ${id}`, err);
+    }
   }
   return requeued;
 }

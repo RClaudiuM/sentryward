@@ -309,7 +309,8 @@ before `up`.
   migrations before it reports healthy, and the worker starts after it. The old
   worker waits up to `WORKER_SHUTDOWN_DRAIN_MS` (default 10 minutes) for its
   in-flight reviews, then puts any still running back in the queue without using
-  one of their attempts and exits, so the new worker picks them up. Compose waits up
+  one of their attempts and exits, so the new worker picks them up about half a
+  minute later (once any forge call the old one had in flight has landed). Compose waits up
   to `WORKER_STOP_GRACE_PERIOD` (default `15m`) before killing it; keep that above
   the drain time, or unfinished reviews wait for stale-lock recovery instead.
   `stop -t <seconds>` overrides the wait.

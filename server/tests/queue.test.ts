@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { lockChange } from "../src/lib/changeLock.ts";
 import { prisma } from "../src/lib/prisma.ts";
 import {
@@ -426,6 +426,11 @@ describe("recoverStale", () => {
 });
 
 describe("requeueInterrupted", () => {
+  const leaseOf = async (id: string) =>
+    (await prisma.reviewJob.findUniqueOrThrow({ where: { id } })).leaseExpiresAt;
+  const expireLease = (id: string) =>
+    prisma.reviewJob.update({ where: { id }, data: { leaseExpiresAt: HOUR_AGO() } });
+
   it("queues a job cut off by shutdown again without using an attempt", async () => {
     const queued = await job("aaa");
     const claimed = await claimNext();
@@ -436,10 +441,15 @@ describe("requeueInterrupted", () => {
       status: "queued",
       attempts: 0,
       lockedAt: null,
-      leaseExpiresAt: null,
     });
 
-    // Claimable at once: no wait for the lease or for stale-lock recovery.
+    // Held briefly, so no worker reclaims it while the stopping one, whose run
+    // would pass the reused attempt's fences, is still alive.
+    expect((await leaseOf(queued.id))!.getTime()).toBeGreaterThan(Date.now());
+    expect(await claimNext()).toBeNull();
+
+    // Then claimable, without waiting for stale-lock recovery.
+    await expireLease(queued.id);
     const retried = await claimNext();
     expect(retried?.id).toBe(queued.id);
     expect(retried?.attempts).toBe(1);
@@ -448,14 +458,55 @@ describe("requeueInterrupted", () => {
   it("supersedes a job whose change has a newer head", async () => {
     const older = await job("aaa");
     await claimNext();
-    await job("bbb");
+    const newer = await job("bbb");
 
     expect(await requeueInterrupted([{ id: older.id, attempts: 1 }])).toBe(1);
     expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: older.id } })).toMatchObject({
       status: "superseded",
       attempts: 1,
-      leaseExpiresAt: null,
     });
+
+    // The newer head waits until any step the old run had in flight has landed.
+    expect((await leaseOf(older.id))!.getTime()).toBeGreaterThan(Date.now());
+    expect(await claimNext()).toBeNull();
+    await expireLease(older.id);
+    expect((await claimNext())?.id).toBe(newer.id);
+  });
+
+  it("an abandoned run cannot extend the hand-back lease", async () => {
+    const queued = await job("aaa");
+    await claimNext();
+    await requeueInterrupted([{ id: queued.id, attempts: 1 }]);
+    const before = await prisma.reviewJob.findUniqueOrThrow({ where: { id: queued.id } });
+
+    await heartbeat(queued.id, 1, 60 * 60 * 1000);
+
+    expect(await prisma.reviewJob.findUniqueOrThrow({ where: { id: queued.id } })).toMatchObject({
+      leaseExpiresAt: before.leaseExpiresAt,
+      lockedAt: null,
+    });
+  });
+
+  it("hands back the remaining jobs when one fails", async () => {
+    const first = await job("aaa", 1);
+    const second = await job("bbb", 2);
+    await claimNext();
+    await claimNext();
+    const spy = vi.spyOn(prisma, "$transaction").mockRejectedValueOnce(new Error("connection reset"));
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      expect(
+        await requeueInterrupted([
+          { id: first.id, attempts: 1 },
+          { id: second.id, attempts: 1 },
+        ]),
+      ).toBe(1);
+    } finally {
+      spy.mockRestore();
+      log.mockRestore();
+    }
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: first.id } })).status).toBe("running");
+    expect((await prisma.reviewJob.findUniqueOrThrow({ where: { id: second.id } })).status).toBe("queued");
   });
 
   it("leaves a job that finished, was cancelled or is held by another attempt", async () => {

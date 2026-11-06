@@ -77,9 +77,12 @@ async function prune(): Promise<void> {
 // recovery retries them on a fresh attempt. So in-flight work gets
 // WORKER_SHUTDOWN_DRAIN_MS to finish, and reviews still running after that are
 // handed back to the queue and the process exits at once: requeueInterrupted
-// returns their attempt, which is only safe once their runs can no longer
-// write. Replies are short and are only drained; one cut off by the container
-// stop falls to stale recovery as before.
+// returns their attempt, and holds their change under a short lease so nothing
+// claims it before this process is gone. Replies are only claimed before
+// shutdown and each settles within MAX_REPLY_RUN_MS (executeReply.ts), so the
+// drain outlasts them unless WORKER_SHUTDOWN_DRAIN_MS is set below that; a reply
+// still running at the deadline is cut off by the exit and falls to stale
+// recovery.
 async function drain(): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<"timeout">((resolve) => {
