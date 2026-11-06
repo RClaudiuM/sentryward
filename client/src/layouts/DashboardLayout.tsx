@@ -22,6 +22,7 @@ import { toast } from "sonner"
 import { ChunkLoadError } from "@/components/ChunkLoadError"
 import { DensityToggle } from "@/components/density-toggle"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
+import { GitHubLink } from "@/components/github-link"
 import { ModeToggle } from "@/components/mode-toggle"
 import { UserAvatar } from "@/components/UserAvatar"
 import { Button } from "@/components/ui/button"
@@ -308,6 +309,7 @@ export function DashboardLayout() {
               <ReviewButton />
               <DensityToggle />
               <ModeToggle />
+              <GitHubLink />
             </div>
           </header>
           {/* Pages are lazy (see App.tsx); these boundaries keep the sidebar and
