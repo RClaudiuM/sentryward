@@ -21,6 +21,10 @@ describe("parseChangeUrl", () => {
       { provider: "gitlab", host: "gitlab.acme.com", project: "team/app", number: 7 },
     ],
     [
+      "https://github.com/acme/web/pull/2147483647",
+      { provider: "github", host: "github.com", project: "acme/web", number: 2147483647 },
+    ],
+    [
       "http://gl.local:8080/team/app/-/merge_requests/7",
       { provider: "gitlab", host: "http://gl.local:8080", project: "team/app", number: 7 },
     ],
@@ -33,6 +37,10 @@ describe("parseChangeUrl", () => {
     "https://github.com/acme/web",
     "https://github.com/acme/web/issues/42",
     "ftp://github.com/acme/web/pull/42",
+    // Numbers no change can have: zero, past the integer column, past safe integers.
+    "https://github.com/acme/web/pull/0",
+    "https://github.com/acme/web/pull/2147483648",
+    "https://gitlab.com/team/app/-/merge_requests/9999999999999999999999",
   ])("rejects %s", (url) => {
     expect(parseChangeUrl(url)).toBeNull();
   });

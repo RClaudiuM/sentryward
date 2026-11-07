@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma.ts";
 import { median } from "../lib/stats.ts";
 import { Prisma } from "../generated/prisma/client.ts";
 import type { Repository } from "../generated/prisma/client.ts";
-import { reviewResultSchema } from "../review/core/models.ts";
+import { MAX_CHANGE_NUMBER, reviewResultSchema } from "../review/core/models.ts";
 import { roundUsd } from "../review/core/pricing/pricing.ts";
 import { parseChangeUrl } from "../review/forge/url.ts";
 import { toJson } from "../review/render/json.ts";
@@ -97,7 +97,15 @@ export async function createReview(req: Request, res: Response) {
 type ListQuery = ReturnType<typeof listReviewsQuerySchema.parse>;
 
 // "#12" (GitHub) and "!12" (GitLab) are how people write change numbers.
-const NUMBER_QUERY = /^[#!]?(\d{1,9})$/;
+const NUMBER_QUERY = /^[#!]?(\d{1,10})$/;
+
+// The change number a search names, if it is one the column can hold; larger
+// values still search titles and paths but must not reach the integer compare.
+function numberFromQuery(q: string): number | null {
+  const match = NUMBER_QUERY.exec(q);
+  const number = match ? Number(match[1]) : 0;
+  return number >= 1 && number <= MAX_CHANGE_NUMBER ? number : null;
+}
 
 function listWhere(workspaceId: string, query: ListQuery): Prisma.ReviewJobWhereInput {
   const { repoId, status, verdict, trigger, number, q, includeSuperseded } = query;
@@ -111,11 +119,11 @@ function listWhere(workspaceId: string, query: ListQuery): Prisma.ReviewJobWhere
   if (status) where.status = status;
   else if (!includeSuperseded) where.status = { not: "superseded" };
   if (q) {
-    const asNumber = NUMBER_QUERY.exec(q);
+    const asNumber = numberFromQuery(q);
     where.OR = [
       { repository: { fullPath: { contains: q, mode: "insensitive" } } },
       { title: { contains: q, mode: "insensitive" } },
-      ...(asNumber ? [{ number: Number(asNumber[1]) }] : []),
+      ...(asNumber ? [{ number: asNumber }] : []),
     ];
   }
   return where;
@@ -203,9 +211,9 @@ function changesTotal(workspaceId: string, query: ListQuery) {
     // Unescaped, as Prisma's `contains` sends it: "%" and "_" in a search act
     // as wildcards on the page rows, so they must here too.
     const pattern = `%${q}%`;
-    const asNumber = NUMBER_QUERY.exec(q);
+    const asNumber = numberFromQuery(q);
     const matches = [Prisma.sql`r.full_path ILIKE ${pattern}`, Prisma.sql`j.title ILIKE ${pattern}`];
-    if (asNumber) matches.push(Prisma.sql`j.number = ${Number(asNumber[1])}`);
+    if (asNumber) matches.push(Prisma.sql`j.number = ${asNumber}`);
     conditions.push(Prisma.sql`(${Prisma.join(matches, " OR ")})`);
   }
   return prisma.$queryRaw<{ total: number }[]>`

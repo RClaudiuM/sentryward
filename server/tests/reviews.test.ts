@@ -106,6 +106,13 @@ describe("POST /api/reviews", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a URL whose number is above the integer range", async () => {
+    const url = "https://gitlab.com/Team/Web/-/merge_requests/2147483648";
+    const res = await request(app).post("/api/reviews").set("Cookie", cookie).send({ url });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe("Not a pull or merge request URL");
+  });
+
   it("404s for a repository that is not connected and 409s for a disabled one", async () => {
     const missing = await request(app)
       .post("/api/reviews")
@@ -136,9 +143,11 @@ describe("POST /api/reviews by repository", () => {
   });
 
   it("validates the body", async () => {
-    const res = await request(app).post("/api/reviews").set("Cookie", cookie).send({ repoId, number: 0 });
-    expect(res.status).toBe(400);
-    expect(res.body.errors).toHaveProperty("number");
+    for (const number of [0, 2147483648]) {
+      const res = await request(app).post("/api/reviews").set("Cookie", cookie).send({ repoId, number });
+      expect(res.status, String(number)).toBe(400);
+      expect(res.body.errors).toHaveProperty("number");
+    }
   });
 
   it("409s for a disabled repository and 404s for another user's", async () => {
@@ -174,6 +183,17 @@ describe("GET /api/reviews", () => {
   it("rejects a page below 1", async () => {
     const res = await request(app).get("/api/reviews?page=0").set("Cookie", cookie);
     expect(res.status).toBe(400);
+  });
+
+  it("rejects a page too large to offset by instead of failing", async () => {
+    for (const view of ["runs", "changes"]) {
+      const res = await request(app).get(`/api/reviews?page=9007199254740991&view=${view}`).set("Cookie", cookie);
+      expect(res.status, view).toBe(400);
+      expect(res.body.errors).toHaveProperty("page");
+    }
+    const last = await request(app).get("/api/reviews?page=1000000&limit=100").set("Cookie", cookie);
+    expect(last.status).toBe(200);
+    expect(last.body.reviews).toEqual([]);
   });
 
   it("filters by status and hides other users' reviews", async () => {
@@ -223,6 +243,19 @@ describe("GET /api/reviews filters", () => {
     expect(numbers(await get("q=%2312"))).toEqual([12]);
     expect(numbers(await get("q=!3"))).toEqual([3]);
     expect((await get("q=nothing")).body.total).toBe(0);
+  });
+
+  it("searches ten-digit change numbers and ignores ones the column cannot hold", async () => {
+    await job({ number: 1500000000 });
+
+    for (const view of ["runs", "changes"]) {
+      expect(numbers(await get(`q=%231500000000&view=${view}`)), view).toEqual([1500000000]);
+      for (const q of ["%232147483648", "%2399999999999"]) {
+        const res = await get(`q=${q}&view=${view}`);
+        expect(res.status, `${q} ${view}`).toBe(200);
+        expect(res.body.total).toBe(0);
+      }
+    }
   });
 
   it("searches titles in any case, in both views", async () => {
