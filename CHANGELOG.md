@@ -31,9 +31,11 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Security
 
-- Slack notifications escape the change title, the repository path and a
-  failed review's error, so a pull request titled `<!channel>` no longer pings
-  the channel and `<url|text>` in a title no longer renders as a link (#247).
+- Slack notifications put the change title, the repository path and a failed
+  review's error in plain-text blocks, so a pull request title can no longer
+  ping the channel, render a link (bracketed or bare) or change the message's
+  formatting. Newlines in these values are collapsed in Slack messages and
+  email subjects (#247).
 
 ## [0.4.0] - 2026-11-07
 
