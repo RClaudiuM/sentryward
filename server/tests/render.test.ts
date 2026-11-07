@@ -217,6 +217,14 @@ describe("toMarkdown with a walkthrough", () => {
 });
 
 describe("review stats line", () => {
+  it("pluralises review passes", async () => {
+    const result = await sampleResult();
+    const withPasses = (passes: number) => toMarkdown({ ...result, coverage: { ...result.coverage, passes } });
+    expect(withPasses(0)).toContain(" · 0 review passes · ");
+    expect(withPasses(1)).toContain(" · 1 review pass · ");
+    expect(withPasses(2)).toContain(" · 2 review passes · ");
+  });
+
   it("is on by default and can be left out, keeping the footer and marker", async () => {
     const result = await sampleResult();
     expect(toMarkdown(result)).toContain("<sub>Reviewed `head` with");

@@ -14,6 +14,12 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   the tag's changelog section, after the multi-arch image is pushed to GHCR.
   Stable tags are marked Latest; pre-release tags are marked as pre-releases.
 
+### Fixed
+
+- The stats line at the end of the summary comment and of the review markdown
+  now reads "2 review passes" instead of "2 review passs" when a review ran
+  more than one pass (#260).
+
 ## [0.4.0] - 2026-11-07
 
 Sentryward remains pre-1.0, and this release changes some default behaviour:
