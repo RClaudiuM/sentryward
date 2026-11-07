@@ -53,6 +53,11 @@ export const changedFileSchema = z.object({
 });
 export type ChangedFile = z.infer<typeof changedFileSchema>;
 
+// Change numbers are stored as Postgres integers (review_jobs.number and the
+// tables keyed by it). Anything larger makes Prisma throw, so every way a number
+// enters (API input, pasted URLs, search) is bounded by this.
+export const MAX_CHANGE_NUMBER = 2_147_483_647;
+
 export const forgeRefSchema = z.object({
   provider: forgeProviderSchema,
   host: z.string(),

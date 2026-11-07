@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pageSchema } from "./pagination.ts";
 import { PROVIDERS } from "../review/llm/providers.ts";
 import { normalizeHostPattern } from "../services/privacyPolicy.ts";
 
@@ -43,7 +44,7 @@ const filters = {
 
 export const auditLogQuerySchema = z.object({
   ...filters,
-  page: z.coerce.number().int().min(1).default(1),
+  page: pageSchema,
   limit: z.coerce.number().int().min(1).max(100).default(25),
 });
 

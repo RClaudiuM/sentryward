@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pageSchema } from "./pagination.ts";
 
 export const idParamsSchema = z.object({ id: z.uuid() });
 
@@ -9,7 +10,7 @@ export const listUsersQuerySchema = z.object({
   q: z.string().trim().max(200).optional(),
   sort: z.enum(["name", "email", "role", "createdAt"]).default("createdAt"),
   dir: z.enum(["asc", "desc"]).default("asc"),
-  page: z.coerce.number().int().min(1).default(1),
+  page: pageSchema,
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
