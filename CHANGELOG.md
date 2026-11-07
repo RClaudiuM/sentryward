@@ -16,6 +16,9 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- The stats line at the end of the summary comment and of the review markdown
+  now reads "2 review passes" instead of "2 review passs" when a review ran
+  more than one pass (#260).
 - `GET /api/reviews` answers `400 Validation failed` instead of
   `500 Internal server error` when the `number` filter is above 2147483647,
   the largest change number the database can store (#261).
