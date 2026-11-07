@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pageSchema } from "./pagination.ts";
 import { USAGE_PERIODS } from "../services/usage.ts";
 
 export const usageQuerySchema = z.object({
@@ -8,6 +9,6 @@ export const usageQuerySchema = z.object({
 
 // The default matches the dashboard's first page size.
 export const recentUsageQuerySchema = usageQuerySchema.extend({
-  page: z.coerce.number().int().min(1).default(1),
+  page: pageSchema,
   limit: z.coerce.number().int().min(1).max(100).default(10),
 });

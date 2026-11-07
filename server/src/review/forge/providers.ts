@@ -1,4 +1,4 @@
-import type { ForgeProvider } from "../core/models.ts";
+import { MAX_CHANGE_NUMBER, type ForgeProvider } from "../core/models.ts";
 
 // What the review pipeline needs to know about each forge, with no I/O. The
 // application side (adapters, connecting, webhooks) lives in
@@ -24,7 +24,12 @@ export interface ForgeInfo {
 function pathMatcher(pattern: RegExp) {
   return (path: string) => {
     const match = pattern.exec(path);
-    return match ? { project: match[1]!, number: Number(match[2]) } : null;
+    if (!match) return null;
+    // A number no change can have is not a change URL; rejecting it here keeps
+    // it away from the forge API and the integer column it would overflow.
+    const number = Number(match[2]);
+    if (!Number.isSafeInteger(number) || number < 1 || number > MAX_CHANGE_NUMBER) return null;
+    return { project: match[1]!, number };
   };
 }
 

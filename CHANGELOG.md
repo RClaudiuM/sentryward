@@ -14,6 +14,21 @@ While Sentryward is pre-1.0, minor versions may include breaking changes.
   the tag's changelog section, after the multi-arch image is pushed to GHCR.
   Stable tags are marked Latest; pre-release tags are marked as pre-releases.
 
+### Fixed
+
+- The stats line at the end of the summary comment and of the review markdown
+  now reads "2 review passes" instead of "2 review passs" when a review ran
+  more than one pass (#260).
+- `GET /api/reviews` answers `400 Validation failed` instead of
+  `500 Internal server error` when the `number` filter is above 2147483647,
+  the largest change number the database can store (#261). Starting a review
+  by repository and number, or from a pasted URL, with a larger number is
+  rejected with a 400 too, and searching for `#1234567890` now matches
+  ten-digit change numbers.
+- The paginated list endpoints (reviews, findings, usage, privacy and admin)
+  answer `400 Validation failed` instead of `500 Internal server error` when
+  `page` is above 1000000.
+
 ### Security
 
 - Slack notifications escape the change title, the repository path and a

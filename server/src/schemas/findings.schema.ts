@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pageSchema } from "./pagination.ts";
 import { CATEGORIES, KINDS, SEVERITIES } from "../review/core/severity.ts";
 
 export const findingStateSchema = z.enum(["open", "resolved", "ignored"]);
@@ -20,7 +21,7 @@ export const listFindingsQuerySchema = z.object({
     .enum(["title", "number", "repository", "state", "severity", "category", "kind", "author", "lastSeenAt"])
     .default("lastSeenAt"),
   dir: z.enum(["asc", "desc"]).default("desc"),
-  page: z.coerce.number().int().min(1).default(1),
+  page: pageSchema,
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
